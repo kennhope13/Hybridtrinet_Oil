@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+torch
+altair
+requests
+openpyxl
+xlrd
+pyyaml

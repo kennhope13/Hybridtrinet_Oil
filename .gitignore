@@ -1,0 +1,11 @@
+__pycache__/
+__init__.py
+logs/
+*.log
+data/base/*.xlsx
+data/upload_samples/*
+data/external/*
+config/secrets.env
+*.env
+.env.*
+artifacts/run_output
