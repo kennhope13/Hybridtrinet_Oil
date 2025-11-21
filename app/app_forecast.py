@@ -60,11 +60,8 @@ from src.model.training import (
 )
 from src.utils.paths import BASE_DIR, DATA_DIR, RUN_OUTPUT_DIR
 
-
-# ================== CONFIG & CONSTANTS ==================
-
-st.set_page_config(page_title="HybridTriNet: Forecast", layout="wide")
-st.title("HybridTriNet: Forecast")
+st.set_page_config(page_title="Dự đoán", layout="wide")
+st.title("DỰ BÁO GIÁ XĂNG DẦU THEO CHUỖI THỜI GIAN")
 
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
@@ -78,24 +75,23 @@ LR = 1e-4
 VAL_RATIO = 0.10
 SEED = 42
 
-# ================== SIDEBAR ==================
 fred_api_key = FRED_API_KEY_DEFAULT
 
-# (tuỳ chọn) cảnh báo nếu chưa cấu hình
 if not fred_api_key:
     st.sidebar.error("Chưa cấu hình FRED_API_KEY trong config/secrets.env")
+date_col = st.text_input("Cột ngày", DATE_COL)
 with st.sidebar:
-    st.header("Settings")
+    st.header("Cấu hình")
 
-    date_col = st.text_input("Date column", DATE_COL)
+   
 
     clean_path = st.text_input(
-        "Path to du_lieu_noi_suy_clean (.xlsx)",
+        "Đường dẫn dữ liệu gốc",
         str(DEFAULT_CLEAN_PATH),
     )
 
     fill_mode = st.selectbox(
-        "Xử lý NaN sau khi merge",
+        "Xử lý NaN sau khi gộp dữ liệu",
         ["none", "ffill", "ffill+bfill", "drop rows with any NaN"],
         index=1,
     )
@@ -103,12 +99,9 @@ with st.sidebar:
     h_next = st.number_input("Số ngày dự đoán", 1, 365, DEFAULT_H_NEXT, 1)
 
 
-# ================== SESSION STATE ==================
-
 if "df_merged" not in st.session_state:
     st.session_state.df_merged = None
 
-# ================== INFO FILE GỐC ==================
 
 base_info_box = st.empty()
 clean_path_str = clean_path.strip()
@@ -129,24 +122,21 @@ if clean_path_str:
                 else:
                     last_date0 = base0[date_col].max()
                     base_info_box.info(
-                        f"Ngày cuối cùng trong dataset gốc: **{last_date0.date()}**. "
+                        f"Ngày cuối cùng trong dữ liệu gốc: **{last_date0.date()}**. "
                         "Hãy chuẩn bị file price_petroleum mới từ ngày tiếp theo trở đi."
                     )
         except Exception as e:
             base_info_box.error(f"Lỗi đọc file gốc: {e}")
 
-# ================== UPLOAD PRICE_PETROLEUM ==================
 
-st.subheader("Upload price_petroleum file")
+st.subheader("Tải lên file price_petroleum")
 up_pp = st.file_uploader(
     "price_petroleum (.csv/.xlsx/.xls)",
     type=["csv", "xlsx", "xls"],
     key="up_pp",
 )
 
-# ================== MERGE BUTTON ==================
-
-if st.button("MERGE"):
+if st.button("GỘP DỮ LIỆU"):
     if not (up_pp and clean_path_str and fred_api_key):
         st.error("Thiếu file upload hoặc thiếu đường dẫn clean.xlsx hoặc thiếu FRED API key")
     else:
@@ -167,7 +157,7 @@ if st.button("MERGE"):
         if df_new is None or len(df_new) == 0:
             st.warning("Không có dữ liệu mới để thêm.")
         else:
-            st.success(f"Merged sources — {info}")
+            st.success(f"Gộp thành công — {info}")
 
             st.subheader("Dữ liệu mới")
             st.dataframe(df_new.tail(10), use_container_width=True)
@@ -204,11 +194,11 @@ if st.button("MERGE"):
             ]
             df_updated = df_updated[order2]
 
-            st.subheader("Updated dữ liệu")
+            st.subheader("Cập nhật dữ liệu")
             st.dataframe(df_updated.tail(15), use_container_width=True)
 
             st.download_button(
-                "Download updated du_lieu_noi_suy_clean.xlsx",
+                "Tải xuống",
                 data=_to_excel_bytes(df_updated),
                 file_name="du_lieu_noi_suy_clean_updated.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -216,20 +206,18 @@ if st.button("MERGE"):
 
             st.session_state.df_merged = df_updated
 
-# ================== DỰ ĐOÁN ==================
-
-st.header("Dự đoán dữ liệu đã thêm")
+st.header("Dự đoán dữ liệu đã cập nhật")
 
 set_seed(SEED)
 device_train = "cuda" if torch.cuda.is_available() else "cpu"
 
 if st.session_state.df_merged is None:
-    st.warning("Chưa MERGE dữ liệu.")
+    st.warning("Chưa gộp dữ liệu.")
 else:
     df = st.session_state.df_merged.copy()
     missing = [c for c in TARGET_COLS if c not in df.columns]
     if missing:
-        st.error(f"Thiếu các cột target trong dữ liệu merged: {missing}")
+        st.error(f"Thiếu các cột target trong dữ liệu gộp: {missing}")
     else:
         # Chuyển target sang numeric
         try:
@@ -259,7 +247,7 @@ else:
                 tr_ld = DataLoader(WindowDS(Xtr, Ytrw), batch_size=BATCH_SZ, shuffle=True)
                 va_ld = DataLoader(WindowDS(Xva, Yvaw), batch_size=BATCH_SZ, shuffle=False)
 
-                if st.button("FORECAST"):
+                if st.button("DỰ ĐOÁN"):
                     t0 = time.time()
                     model = HybridTriNet(
                         k=K,
@@ -356,19 +344,38 @@ else:
                         device=device_train,
                     )
                     F = F_std * sd + mu
-
                     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
                     last_date = df[date_col].dropna().iloc[-1]
                     idx = pd.bdate_range(last_date + BDay(1), periods=int(h_next))
+
                     out = pd.DataFrame(F, index=idx, columns=TARGET_COLS)
                     out.to_csv(RUN / "forecast.csv", index=True)
-
                     pred_status.write("Dự đoán xong.")
 
-                    st.subheader(f"Dự đoán {int(h_next)} ngày tiếp theo")
-                    st.dataframe(out, use_container_width=True)
+                    cols = TARGET_COLS  # ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 
-                    # Vẽ lịch sử + dự đoán
+                    hist_last = Y[-1]  # shape (D,)
+                    hist_last_df = pd.DataFrame([hist_last], index=[last_date], columns=cols)
+
+                    full = pd.concat([hist_last_df, out], axis=0)
+
+                    diff_full = full[cols].diff()
+
+                    diff = diff_full.iloc[1:].copy()
+
+                    diff.columns = [
+                        "MG95_change",
+                        "MG92_change",
+                        "DO 0.001%_change",
+                        "DO 0.05%_change",
+                    ]
+
+                    out_display = pd.concat([out, diff], axis=1)
+
+
+                    st.subheader(f"Dự đoán {int(h_next)} tiếp theo")
+                    st.dataframe(out_display, use_container_width=True)
+
                     plot_cols = TARGET_COLS
                     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 

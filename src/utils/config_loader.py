@@ -1,5 +1,3 @@
-# src/utils/config_loader.py
-
 import os
 from pathlib import Path
 
@@ -13,7 +11,6 @@ SECRETS_ENV_PATH = CONFIG_DIR / "secrets.env"
 
 
 def load_yaml_config() -> dict:
-    """Đọc file streamlit_config.yaml, trả về dict (có thể rỗng)."""
     if not YAML_CONFIG_PATH.exists():
         return {}
     with open(YAML_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -22,7 +19,6 @@ def load_yaml_config() -> dict:
 
 
 def load_env_secrets():
-    """Đọc secrets.env và set vào os.environ nếu chưa có."""
     if not SECRETS_ENV_PATH.exists():
         return
     text = SECRETS_ENV_PATH.read_text(encoding="utf-8")
