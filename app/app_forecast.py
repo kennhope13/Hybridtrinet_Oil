@@ -30,7 +30,7 @@ K = int(cfg.get("default_k", 64))
 H = int(cfg.get("default_h", 14))
 DEFAULT_H_NEXT = int(cfg.get("default_h_next", 5))
 
-default_clean_rel = cfg.get("default_clean_path", "data/base/du_lieu_noi_suy_clean_updated_14-11.xlsx")
+default_clean_rel = cfg.get("default_clean_path", "data/base/du_lieu_noi_suy_clean_updated_end_14-11.xlsx")
 DEFAULT_CLEAN_PATH = (BASE_DIR / default_clean_rel).resolve()
 
 # Ưu tiên FRED_API_KEY từ env (đã load từ secrets.env)
@@ -429,3 +429,45 @@ else:
 
                     st.subheader("Lịch sử và dự đoán")
                     st.altair_chart((ch_lines + ch_rule).properties(height=420), use_container_width=True)
+                    # ===== Biểu đồ tách riêng từng target =====
+                    st.subheader("Lịch sử và dự đoán theo từng sản phẩm")
+
+                    tabs = st.tabs(plot_cols)  # plot_cols = TARGET_COLS
+
+                    for target, tab in zip(plot_cols, tabs):
+                        with tab:
+                            v_sub = viz[viz["series"] == target].copy()
+
+                            if v_sub.empty:
+                                st.warning(f"Không có dữ liệu cho {target}.")
+                                continue
+
+                            ch_t = (
+                                alt.Chart(v_sub)
+                                .mark_line()
+                                .encode(
+                                    x=alt.X(f"{date_col}:T", title="Ngày"),
+                                    y=alt.Y("value:Q", title="Giá trị"),
+                                    color=alt.Color(
+                                        "type:N",
+                                        title="Loại",
+                                        sort=["history", "forecast"],
+                                        legend=alt.Legend(title="Loại dữ liệu"),
+                                    ),
+                                    tooltip=[date_col, "type", "value"],
+                                )
+                            )
+
+                            ch_t_rule = (
+                                alt.Chart(rule_df)
+                                .mark_rule(strokeDash=[4, 4])
+                                .encode(x=alt.X(f"{date_col}:T"))
+                            )
+
+                            st.altair_chart(
+                                (ch_t + ch_t_rule).properties(
+                                    title=f"{target}", height=320
+                                ),
+                                use_container_width=True,
+                            )
+
