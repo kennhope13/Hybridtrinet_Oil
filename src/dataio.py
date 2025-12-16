@@ -54,12 +54,12 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def build_merged(up_pp, clean_path: str, date_col: str, fill_mode: str, fred_api_key: str):
-    assert clean_path, "Chưa nhập đường dẫn du_lieu_noi_suy_clean (.xlsx)."
+    assert clean_path, "Chưa nhập đường dẫn root."
     p = Path(clean_path)
     assert p.exists(), f"Không tìm thấy file: {clean_path}"
 
     base = pd.read_excel(p, engine="openpyxl")
-    assert date_col in base.columns, f"Thiếu cột ngày '{date_col}' trong du_lieu_noi_suy_clean"
+    assert date_col in base.columns, f"Thiếu cột ngày '{date_col}' trong root"
     base = _ensure_date(base, date_col)
     last_date = base[date_col].max()
 

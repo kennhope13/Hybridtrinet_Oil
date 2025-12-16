@@ -86,6 +86,11 @@ def _get_criterion(use_l1_loss: bool, smoothl1_beta: float):
     return nn.SmoothL1Loss(beta=smoothl1_beta)
 
 
+def mean_absolute_percentage_error(P: np.ndarray, G: np.ndarray, eps: float = 1e-8) -> float:
+    denom = np.clip(np.abs(G), eps, None)
+    return float(np.mean(np.abs((P - G) / denom)) * 100.0)
+
+
 def train_one(
     model: torch.nn.Module,
     loader,
@@ -191,12 +196,12 @@ def eval_metrics_orig(
     sse = float((diff ** 2).sum())
     sst = float(((G - G.mean()) ** 2).sum())
     r2 = float(1.0 - sse / sst) if sst > 0 else float("nan")
+    mape = mean_absolute_percentage_error(P, G)
 
-    return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
+    return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2, "mape": mape}
 
 
 def fit_model(
-    
     model: torch.nn.Module,
     train_ld,
     val_ld,
@@ -222,6 +227,7 @@ def fit_model(
         "Start training %s | device=%s | epochs=%d | lr=%.6f | H=%d | D=%d",
         name, device, epochs, lr, H, D,
     )
+
     def lr_lambda(ep):
         ep = float(ep)
         if ep < warmup:
@@ -233,7 +239,7 @@ def fit_model(
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     stopper = EarlyStopper(patience=40, min_delta=5e-4)
 
-    history = {"train": [], "val": [], "mae_orig": [], "lr": []}
+    history = {"train": [], "val": [], "mae_orig": [], "mape_orig": [], "lr": []}
 
     va0, per_h0 = eval_one(
         model,
@@ -258,15 +264,18 @@ def fit_model(
     P0 = np.vstack(P_list) * sd + mu
     G0 = np.vstack(G_list) * sd + mu
     mae0 = float(np.mean(np.abs(P0 - G0)))
+    mape0 = mean_absolute_percentage_error(P0, G0)
     lr0 = opt.param_groups[0]["lr"]
 
     history["train"].append(float("nan"))
     history["val"].append(va0)
     history["mae_orig"].append(mae0)
+    history["mape_orig"].append(mape0)
     history["lr"].append(lr0)
 
     best = {
         "mae": mae0,
+        "mape": mape0,
         "val": va0,
         "per_h": per_h0,
         "ep": 0,
@@ -313,15 +322,17 @@ def fit_model(
         P = np.vstack(P_list) * sd + mu
         G = np.vstack(G_list) * sd + mu
         mae_orig = float(np.mean(np.abs(P - G)))
+        mape_orig = mean_absolute_percentage_error(P, G)
         cur_lr = opt.param_groups[0]["lr"]
 
         history["train"].append(tr)
         history["val"].append(va)
         history["mae_orig"].append(mae_orig)
+        history["mape_orig"].append(mape_orig)
         history["lr"].append(cur_lr)
         logger.info(
-            "ep=%03d | train=%.6f | val=%.6f | mae_orig=%.6f | lr=%.6f",
-            ep, tr, va, mae_orig, cur_lr
+            "ep=%03d | train=%.6f | val=%.6f | mae_orig=%.6f | mape_orig=%.2f | lr=%.6f",
+            ep, tr, va, mae_orig, mape_orig, cur_lr
         )
 
         if status_cb is not None:
@@ -335,6 +346,7 @@ def fit_model(
             best.update(
                 {
                     "mae": mae_orig,
+                    "mape": mape_orig,
                     "val": va,
                     "per_h": per_h,
                     "ep": ep,
@@ -351,9 +363,9 @@ def fit_model(
     best["epochs_run"] = len(history["val"]) - 1
     best["history"] = history
     logger.info(
-                "New best at ep=%03d | mae_orig=%.6f (old=%.6f)",
-                ep, mae_orig, best["mae"]
-            )
+        "New best at ep=%03d | mae_orig=%.6f (old=%.6f)",
+        ep, mae_orig, best["mae"]
+    )
     return best
 
 
