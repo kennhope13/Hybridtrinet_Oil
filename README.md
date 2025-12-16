@@ -1,4 +1,4 @@
-# HybridTriNet Oil Forecast – Streamlit (1-file app)
+# HybridTriNet Oil Forecast
 
 Ứng dụng Streamlit dự báo giá xăng dầu theo chuỗi thời gian bằng mô hình **HybridTriNet**. App hỗ trợ **đọc dữ liệu gốc**, **upload file price_petroleum để gộp/cập nhật**, xử lý NaN, nội suy một số biến ngoại sinh và **dự báo N ngày làm việc tiếp theo**, kèm biểu đồ so sánh **Dự báo vs Thực tế**.
 
