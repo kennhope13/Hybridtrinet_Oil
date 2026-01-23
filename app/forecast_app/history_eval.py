@@ -1,244 +1,294 @@
 # forecast_app/history_eval.py
-from datetime import datetime
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
+
 import numpy as np
 import pandas as pd
-import streamlit as st
-import altair as alt
-
-from .metrics import _nan_mae, _nan_mape, _nan_mse, _nan_rmse, _r2_stats
-from .data_helpers import _parse_dates_any
-from src.utils.paths import RUN_OUTPUT_DIR
 
 
-def _alt_theme_base():
-    return dict(
-        view=dict(strokeOpacity=0),
-        axis=dict(
-            gridColor="rgba(2,6,23,0.06)",
-            labelColor="#5B6B82",
-            titleColor="#0B1220",
-            tickColor="rgba(2,6,23,0.10)",
-        ),
-    )
+TARGETS_DEFAULT = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
+DATE_CANDIDATES = ["date", "ngay", "ngày", "datetime", "time", "ds"]
 
 
-def history_line_chart(df_valid: pd.DataFrame, xcol: str, ycol: str, title: str):
-    d = df_valid.dropna(subset=[xcol, ycol]).sort_values(xcol)
-    base = alt.Chart(d).encode(
-        x=alt.X(f"{xcol}:T", title="Mốc train_last_date"),
-        tooltip=[
-            alt.Tooltip("file:N", title="File"),
-            alt.Tooltip(f"{xcol}:T", title="Train last"),
-            alt.Tooltip("overlap_days:Q", title="Overlap days"),
-            alt.Tooltip(f"{ycol}:Q", title=title),
-        ],
-    )
-    line = base.mark_line().encode(
-        y=alt.Y(f"{ycol}:Q", title=title),
-        color=alt.value("#2563EB" if "MAPE" in title else "#14B8A6"),
-    )
-    pts = base.mark_circle(size=80, filled=True).encode(
-        y=alt.Y(f"{ycol}:Q", title=title),
-        color=alt.value("#2563EB" if "MAPE" in title else "#14B8A6"),
-        size=alt.Size("overlap_days:Q", legend=None, scale=alt.Scale(range=[40, 260])),
-    )
-    ch = (line + pts).properties(height=300).interactive()
-    return ch.configure(**_alt_theme_base())
+def _norm(s: str) -> str:
+    s = str(s).strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
 
 
-def history_rank_bar(df_valid: pd.DataFrame, ycol: str, title: str, top_k: int = 8, ascending=True):
-    d = df_valid.dropna(subset=["train_last_date", ycol]).sort_values(ycol, ascending=ascending).head(int(top_k)).copy()
-    if d.empty:
-        return None
-    d["label"] = d["train_last_date"].dt.strftime("%Y-%m-%d")
-    return (
-        alt.Chart(d)
-        .mark_bar()
-        .encode(
-            y=alt.Y("label:N", sort="-x", title="train_last_date"),
-            x=alt.X(f"{ycol}:Q", title=title),
-            tooltip=["file", "train_last_date", "overlap_days", ycol],
-            color=alt.value("#2563EB" if "MAPE" in title else "#14B8A6"),
-        )
-        .properties(height=260)
-        .configure(**_alt_theme_base())
-    )
+def _pick_date_col(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    norm_cols = [_norm(c) for c in cols]
+
+    for cand in DATE_CANDIDATES:
+        candn = _norm(cand)
+        if candn in norm_cols:
+            return cols[norm_cols.index(candn)]
+
+    best_col, best_ok = None, -1
+    for c in cols[:10]:
+        s = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+        ok = int(s.notna().sum())
+        if ok > best_ok:
+            best_ok = ok
+            best_col = c
+    if best_col is None or best_ok <= 0:
+        raise ValueError("Không tìm thấy cột ngày (date) hợp lệ trong file.")
+    return best_col
 
 
-def eval_forecast_history_dir_local(history_dir: Path, actual_df: pd.DataFrame, date_col: str, target_cols: List[str], eps: float = 1e-8) -> pd.DataFrame:
-    hdir = Path(history_dir)
-    files = sorted(hdir.glob("forecast_until_*.csv"), key=lambda p: p.stat().st_mtime)
-    if not files:
-        return pd.DataFrame()
+def _find_target_cols(df: pd.DataFrame, targets: List[str]) -> Dict[str, str]:
+    cols = list(df.columns)
+    norm_cols = [_norm(c) for c in cols]
 
-    act = actual_df.copy()
-    act[date_col] = _parse_dates_any(act[date_col])
-    act = act.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
-    act_keep = [date_col] + [c for c in target_cols if c in act.columns]
-    act = act[act_keep].copy()
+    out: Dict[str, str] = {}
+    for t in targets:
+        tn = _norm(t)
+
+        if tn in norm_cols:
+            out[t] = cols[norm_cols.index(tn)]
+            continue
+
+        hits = []
+        for c, cn in zip(cols, norm_cols):
+            if tn in cn:
+                hits.append(c)
+
+        if hits:
+
+            def score(name: str) -> int:
+                n = _norm(name)
+                if "cal" in n or "calib" in n:
+                    return 3
+                if "pred" in n or "forecast" in n or "yhat" in n:
+                    return 2
+                return 1
+
+            hits = sorted(hits, key=score, reverse=True)
+            out[t] = hits[0]
+
+    return out
+
+
+@dataclass
+class HistoryFileMeta:
+    path: Path
+    forecast_until: Optional[pd.Timestamp]
+    horizon_h: Optional[int]
+    asof: Optional[pd.Timestamp]
+
+
+# ✅ hỗ trợ cả YYYYMMDD và YYYYMMDD_HHMMSS
+_HISTORY_RE = re.compile(
+    r"forecast_until_(?P<until>\d{8})_H(?P<h>\d+?)_(?P<asof>\d{8}(?:_\d{6})?)(?:\D|$)"
+)
+
+
+def _parse_history_filename(p: Path) -> HistoryFileMeta:
+    m = _HISTORY_RE.search(p.name)
+    if not m:
+        return HistoryFileMeta(p, None, None, None)
+
+    until = pd.to_datetime(m.group("until"), format="%Y%m%d", errors="coerce")
+    h = int(m.group("h")) if m.group("h") else None
+
+    asof_raw = m.group("asof")
+    if "_" in asof_raw:
+        asof = pd.to_datetime(asof_raw, format="%Y%m%d_%H%M%S", errors="coerce")
+    else:
+        asof = pd.to_datetime(asof_raw, format="%Y%m%d", errors="coerce")
+
+    return HistoryFileMeta(p, until, h, asof)
+
+
+def _read_forecast_file(path: Path) -> pd.DataFrame:
+    suf = path.suffix.lower()
+    if suf in [".xlsx", ".xls"]:
+        xls = pd.ExcelFile(path)
+        preferred = None
+        for s in xls.sheet_names:
+            sn = _norm(s)
+            if sn in ["forecast", "pred", "predict", "output", "sheet1"]:
+                preferred = s
+                break
+        sheet = preferred or xls.sheet_names[0]
+        return pd.read_excel(path, sheet_name=sheet)
+    if suf == ".csv":
+        return pd.read_csv(path)
+    if suf in [".parquet", ".pq"]:
+        return pd.read_parquet(path)
+    raise ValueError(f"Không hỗ trợ định dạng file: {path.name}")
+
+
+def load_forecast_history_long(
+    history_dir: str | Path,
+    targets: List[str] = TARGETS_DEFAULT,
+) -> pd.DataFrame:
+    """
+    Output long-form:
+      [date, target, yhat, source_file, asof, forecast_until, horizon_h]
+    """
+    history_dir = Path(history_dir)
+    files = sorted([p for p in history_dir.glob("*") if p.is_file()])
 
     rows = []
-    for f in files:
+    for fp in files:
+        meta = _parse_history_filename(fp)
         try:
-            pred = pd.read_csv(f)
+            df = _read_forecast_file(fp)
         except Exception:
             continue
-        if date_col not in pred.columns:
+
+        date_col = _pick_date_col(df)
+        df = df.copy()
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+        df = df[df[date_col].notna()]
+        df["date"] = df[date_col].dt.normalize()
+
+        tcols = _find_target_cols(df, targets)
+        if not tcols:
             continue
 
-        pred[date_col] = _parse_dates_any(pred[date_col])
-        pred = pred.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+        for t, c in tcols.items():
+            tmp = df[["date", c]].rename(columns={c: "yhat"})
+            tmp["target"] = t
+            tmp["source_file"] = fp.name
+            tmp["asof"] = meta.asof
+            tmp["forecast_until"] = meta.forecast_until
+            tmp["horizon_h"] = meta.horizon_h
+            rows.append(tmp)
 
-        pred_keep = [date_col] + [c for c in target_cols if c in pred.columns]
-        pred2 = pred[pred_keep].copy()
+    if not rows:
+        return pd.DataFrame(
+            columns=["date", "target", "yhat", "source_file", "asof", "forecast_until", "horizon_h"]
+        )
 
-        merged = pred2.merge(act, on=date_col, suffixes=("_pred", "_actual"))
-        overlap_days = int(merged[date_col].nunique()) if not merged.empty else 0
-
-        macro_mae = np.nan
-        macro_mape = np.nan
-        macro_mse = np.nan
-        macro_rmse = np.nan
-        macro_r2 = np.nan
-
-        macro__n = 0
-        macro__sse = np.nan
-        macro__sum_y = np.nan
-        macro__sum_y2 = np.nan
-
-        per = {}
-        per_stats_default = {"n": 0, "sse": np.nan, "sum_y": np.nan, "sum_y2": np.nan, "r2": np.nan}
-
-        if overlap_days > 0:
-            all_gt = []
-            all_pr = []
-
-            for c in target_cols:
-                cp, ca = f"{c}_pred", f"{c}_actual"
-                if cp not in merged.columns or ca not in merged.columns:
-                    per[c] = {"mae": np.nan, "mape_%": np.nan, "mse": np.nan, "rmse": np.nan, "r2": np.nan, **per_stats_default}
-                    continue
-
-                pr = pd.to_numeric(merged[cp], errors="coerce").to_numpy(dtype=float)
-                gt = pd.to_numeric(merged[ca], errors="coerce").to_numpy(dtype=float)
-                m = np.isfinite(pr) & np.isfinite(gt)
-
-                if int(m.sum()) == 0:
-                    per[c] = {"mae": np.nan, "mape_%": np.nan, "mse": np.nan, "rmse": np.nan, "r2": np.nan, **per_stats_default}
-                    continue
-
-                pr_m = pr[m]
-                gt_m = gt[m]
-                stc = _r2_stats(gt_m, pr_m)
-
-                per[c] = {
-                    "mae": _nan_mae(gt_m, pr_m),
-                    "mape_%": _nan_mape(gt_m, pr_m, eps=eps),
-                    "mse": _nan_mse(gt_m, pr_m),
-                    "rmse": _nan_rmse(gt_m, pr_m),
-                    "r2": stc["r2"],
-                    "n": stc["n"],
-                    "sse": stc["sse"],
-                    "sum_y": stc["sum_y"],
-                    "sum_y2": stc["sum_y2"],
-                }
-
-                all_gt.append(gt_m)
-                all_pr.append(pr_m)
-
-            if all_gt:
-                gt_flat = np.concatenate(all_gt)
-                pr_flat = np.concatenate(all_pr)
-
-                macro_mae = _nan_mae(gt_flat, pr_flat)
-                macro_mape = _nan_mape(gt_flat, pr_flat, eps=eps)
-                macro_mse = _nan_mse(gt_flat, pr_flat)
-                macro_rmse = float(np.sqrt(macro_mse)) if np.isfinite(macro_mse) else np.nan
-
-                stm = _r2_stats(gt_flat, pr_flat)
-                macro_r2 = stm["r2"]
-
-                macro__n = stm["n"]
-                macro__sse = stm["sse"]
-                macro__sum_y = stm["sum_y"]
-                macro__sum_y2 = stm["sum_y2"]
-
-        meta_train_last = None
-        if "train_last_date" in pred.columns:
-            try:
-                meta_train_last = pd.to_datetime(pred["train_last_date"].iloc[0], errors="coerce")
-                if pd.notna(meta_train_last):
-                    meta_train_last = pd.Timestamp(meta_train_last).normalize()
-            except Exception:
-                meta_train_last = None
-
-        meta_generated_at = None
-        if "generated_at" in pred.columns:
-            try:
-                meta_generated_at = pd.to_datetime(pred["generated_at"].iloc[0], errors="coerce")
-            except Exception:
-                meta_generated_at = None
-
-        row = {
-            "file": f.name,
-            "mtime": datetime.fromtimestamp(f.stat().st_mtime),
-            "train_last_date": meta_train_last,
-            "generated_at": meta_generated_at,
-            "overlap_days": overlap_days,
-            "macro_mae": macro_mae,
-            "macro_mape_%": macro_mape,
-            "macro_mse": macro_mse,
-            "macro_rmse": macro_rmse,
-            "macro_r2": macro_r2,
-            "macro__n": macro__n,
-            "macro__sse": macro__sse,
-            "macro__sum_y": macro__sum_y,
-            "macro__sum_y2": macro__sum_y2,
-        }
-
-        for c in target_cols:
-            row[f"{c}_mae"] = per.get(c, {}).get("mae", np.nan)
-            row[f"{c}_mape_%"] = per.get(c, {}).get("mape_%", np.nan)
-            row[f"{c}_mse"] = per.get(c, {}).get("mse", np.nan)
-            row[f"{c}_rmse"] = per.get(c, {}).get("rmse", np.nan)
-            row[f"{c}_r2"] = per.get(c, {}).get("r2", np.nan)
-
-            row[f"{c}__n"] = per.get(c, {}).get("n", 0)
-            row[f"{c}__sse"] = per.get(c, {}).get("sse", np.nan)
-            row[f"{c}__sum_y"] = per.get(c, {}).get("sum_y", np.nan)
-            row[f"{c}__sum_y2"] = per.get(c, {}).get("sum_y2", np.nan)
-
-        rows.append(row)
-
-    dfm = pd.DataFrame(rows)
-    if dfm.empty:
-        return dfm
-    return dfm.sort_values(["train_last_date", "mtime"], na_position="last").reset_index(drop=True)
+    out = pd.concat(rows, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+    out["yhat"] = pd.to_numeric(out["yhat"], errors="coerce")
+    out = out.dropna(subset=["date", "target", "yhat"])
+    return out
 
 
-def _history_signature(forecast_dir: Path, clean_path_str: str) -> str:
-    items = []
-    p = Path(clean_path_str)
-    if p.exists():
-        stt = p.stat()
-        items.append(("clean", p.name, stt.st_mtime, stt.st_size))
-    for f in sorted(forecast_dir.glob("forecast_until_*.csv")):
-        try:
-            stt = f.stat()
-            items.append((f.name, stt.st_mtime, stt.st_size))
-        except Exception:
-            continue
-    return str(items)
+def load_actual_root(
+    root_xlsx: str | Path,
+    targets: List[str] = TARGETS_DEFAULT,
+) -> pd.DataFrame:
+    """
+    Output wide:
+      [date, MG95, MG92, DO 0.001%, DO 0.05%] (chỉ lấy các cột tìm thấy)
+    """
+    root_xlsx = Path(root_xlsx)
+    xls = pd.ExcelFile(root_xlsx)
+    df = pd.read_excel(root_xlsx, sheet_name=xls.sheet_names[0])
+
+    date_col = _pick_date_col(df)
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+    df = df[df[date_col].notna()]
+    df["date"] = df[date_col].dt.normalize()
+
+    tcols = _find_target_cols(df, targets)
+
+    keep = ["date"]
+    rename = {}
+    for t, c in tcols.items():
+        keep.append(c)
+        rename[c] = t
+
+    out = df[keep].rename(columns=rename)
+    for t in targets:
+        if t in out.columns:
+            out[t] = pd.to_numeric(out[t], errors="coerce")
+
+    out = out.drop_duplicates("date").sort_values("date").reset_index(drop=True)
+    return out
 
 
-@st.cache_data(show_spinner=False)
-def _cached_eval_history(sig: str, actual_df: pd.DataFrame, date_col: str, target_cols: tuple) -> pd.DataFrame:
-    forecast_dir = RUN_OUTPUT_DIR / "forecast_history"
-    return eval_forecast_history_dir_local(
-        history_dir=forecast_dir,
-        actual_df=actual_df,
-        date_col=date_col,
-        target_cols=list(target_cols),
-    )
+def build_compare_actual_vs_pred(
+    actual_wide: pd.DataFrame,
+    history_long: pd.DataFrame,
+    strategy: str = "latest_asof",
+) -> pd.DataFrame:
+    targets = [c for c in actual_wide.columns if c != "date"]
+    act_long = actual_wide.melt(id_vars=["date"], value_vars=targets, var_name="target", value_name="actual")
+    act_long = act_long.dropna(subset=["actual"])
+
+    hist = history_long.copy()
+    if strategy == "latest_asof":
+        hist["_asof_sort"] = pd.to_datetime(hist["asof"], errors="coerce").fillna(pd.Timestamp("1900-01-01"))
+        hist = hist.sort_values(["date", "target", "_asof_sort"]).drop_duplicates(["date", "target"], keep="last")
+        hist = hist.drop(columns=["_asof_sort"])
+
+    merged = act_long.merge(
+        hist[["date", "target", "yhat", "asof", "source_file"]],
+        on=["date", "target"],
+        how="inner",
+    ).rename(columns={"yhat": "pred"})
+
+    merged = merged.sort_values(["target", "date"]).reset_index(drop=True)
+    return merged
+
+
+def compute_metrics(compare_long: pd.DataFrame) -> pd.DataFrame:
+    """
+    MAE, MAPE, MSE, RMSE, R2 theo target + overall.
+    Ẩn n (không hiển thị số mẫu).
+    An toàn khi compare_long rỗng / thiếu actual (NaN) -> trả NaN, không crash.
+    """
+    def r2(y, yhat):
+        y = np.asarray(y, dtype=float)
+        yhat = np.asarray(yhat, dtype=float)
+        ss_res = np.sum((y - yhat) ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        return np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
+
+    cols = ["target", "MAE", "MAPE_%", "MSE", "RMSE", "R2"]
+
+    if compare_long is None or len(compare_long) == 0:
+        return pd.DataFrame(columns=cols)
+
+    # ép numeric + lọc cặp hợp lệ (để ngày lễ thiếu actual không làm lỗi)
+    df = compare_long.copy()
+    df["actual"] = pd.to_numeric(df["actual"], errors="coerce")
+    df["pred"]   = pd.to_numeric(df["pred"], errors="coerce")
+    df = df.dropna(subset=["target"])  # target bắt buộc
+    # chỉ tính metric trên các dòng có đủ actual+pred
+    df_valid = df.dropna(subset=["actual", "pred"])
+
+    rows = []
+
+    # per-target
+    for t, g in df_valid.groupby("target"):
+        y = g["actual"].to_numpy(dtype=float)
+        yhat = g["pred"].to_numpy(dtype=float)
+
+        err = y - yhat
+        mae = float(np.mean(np.abs(err)))
+        mse = float(np.mean(err ** 2))
+        rmse = float(np.sqrt(mse))
+        mape = float(np.mean(np.abs(err) / np.clip(np.abs(y), 1e-9, None)) * 100.0)
+        rows.append([t, mae, mape, mse, rmse, r2(y, yhat)])  # <-- 6 phần tử
+
+    # overall (nếu không có cặp hợp lệ thì overall = NaN)
+    if len(df_valid) == 0:
+        rows.append(["__OVERALL__", np.nan, np.nan, np.nan, np.nan, np.nan])
+    else:
+        y = df_valid["actual"].to_numpy(dtype=float)
+        yhat = df_valid["pred"].to_numpy(dtype=float)
+        err = y - yhat
+        mae = float(np.mean(np.abs(err)))
+        mse = float(np.mean(err ** 2))
+        rmse = float(np.sqrt(mse))
+        mape = float(np.mean(np.abs(err) / np.clip(np.abs(y), 1e-9, None)) * 100.0)
+        rows.append(["__OVERALL__", mae, mape, mse, rmse, r2(y, yhat)])  # <-- 6 phần tử
+
+    return pd.DataFrame(rows, columns=cols)

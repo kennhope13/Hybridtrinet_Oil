@@ -20,10 +20,17 @@
 # - Khi eval forecast_history, lưu thêm thống kê: SSE / Σy / Σy² / n (macro & per-target)
 # - Ở phần tổng hợp lịch sử, tính R² global bằng:
 #   R2 = 1 - ΣSSE / ( Σy² - (Σy)² / n )
+#
+# ✅ NEW (THEO YÊU CẦU):
+# - Mỗi lần chạy phải ra kết quả khác:
+#   + Ensemble seed random mỗi run
+#   + Uncertainty mode (MC Dropout) -> mean / p10 / p90
+#   + Không cung cấp seed để tái lập
 
 import io
 import os
 import sys
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -32,6 +39,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from pandas.tseries.offsets import BDay
@@ -290,7 +298,7 @@ K = 64
 H = 14
 
 VAL_RATIO = 0.10
-SEED = 42
+SEED = 42  # giữ constant nhưng không dùng để cố định kết quả mỗi run
 
 # =========================
 # UI helpers
@@ -435,6 +443,84 @@ def _read_upload_file(up):
         except Exception:
             return pd.read_excel(bio)
     raise ValueError(f"Unsupported file type: {suf}")
+
+
+def _read_actual_upload_for_compare(up, date_col: str, target_cols: List[str]) -> pd.DataFrame:
+    """Đọc file actual upload để so sánh với forecast hiện tại."""
+    df = _read_upload_file(up)
+
+    if date_col not in df.columns:
+        raise ValueError(f"File thực tế thiếu cột ngày '{date_col}'")
+
+    missing = [c for c in target_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"File thực tế thiếu các cột target: {missing}")
+
+    df = df[[date_col] + list(target_cols)].copy()
+    df[date_col] = _parse_dates_any(df[date_col])
+    df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+
+    for c in target_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # giữ dòng có ít nhất 1 target có số
+    df = df.dropna(subset=target_cols, how="all").reset_index(drop=True)
+    return df
+
+
+def _metrics_on_overlap(merged: pd.DataFrame, date_col: str, target_cols: List[str], eps: float = 1e-8) -> Dict:
+    """Tính metrics trên phần overlap pred vs actual."""
+    out = {"overlap_days": int(merged[date_col].nunique()) if (merged is not None and not merged.empty) else 0}
+
+    if merged is None or merged.empty:
+        out["macro_mae"] = np.nan
+        out["macro_mape_%"] = np.nan
+        out["macro_rmse"] = np.nan
+        out["macro_r2"] = np.nan
+        for c in target_cols:
+            out[f"{c}_mae"] = np.nan
+            out[f"{c}_mape_%"] = np.nan
+            out[f"{c}_rmse"] = np.nan
+            out[f"{c}_r2"] = np.nan
+        return out
+
+    all_gt, all_pr = [], []
+    for c in target_cols:
+        cp, ca = f"{c}_pred", f"{c}_actual"
+        pr = pd.to_numeric(merged[cp], errors="coerce").to_numpy(dtype=float)
+        gt = pd.to_numeric(merged[ca], errors="coerce").to_numpy(dtype=float)
+        m = np.isfinite(pr) & np.isfinite(gt)
+        if int(m.sum()) == 0:
+            out[f"{c}_mae"] = np.nan
+            out[f"{c}_mape_%"] = np.nan
+            out[f"{c}_rmse"] = np.nan
+            out[f"{c}_r2"] = np.nan
+            continue
+
+        pr_m = pr[m]
+        gt_m = gt[m]
+        out[f"{c}_mae"] = _nan_mae(gt_m, pr_m)
+        out[f"{c}_mape_%"] = _nan_mape(gt_m, pr_m, eps=eps)
+        out[f"{c}_rmse"] = _nan_rmse(gt_m, pr_m)
+        out[f"{c}_r2"] = _nan_r2(gt_m, pr_m)
+
+        all_gt.append(gt_m)
+        all_pr.append(pr_m)
+
+    if all_gt:
+        gt_flat = np.concatenate(all_gt)
+        pr_flat = np.concatenate(all_pr)
+        out["macro_mae"] = _nan_mae(gt_flat, pr_flat)
+        out["macro_mape_%"] = _nan_mape(gt_flat, pr_flat, eps=eps)
+        out["macro_rmse"] = _nan_rmse(gt_flat, pr_flat)
+        out["macro_r2"] = _nan_r2(gt_flat, pr_flat)
+    else:
+        out["macro_mae"] = np.nan
+        out["macro_mape_%"] = np.nan
+        out["macro_rmse"] = np.nan
+        out["macro_r2"] = np.nan
+
+    return out
 
 
 def _get_upload_last_date(up, date_col: str):
@@ -824,17 +910,28 @@ def fit_model_better(
     return model, best_val
 
 # =========================
-# ✅ AUTOREGRESSIVE SAFE (FIX tuple output)
+# ✅ AUTOREGRESSIVE SAFE + MC DROPOUT
 # =========================
+def enable_dropout_only(model):
+    """Giữ model ở eval nhưng bật riêng các layer Dropout để MC-sampling."""
+    model.eval()
+    for m in model.modules():
+        if isinstance(m, (nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d)):
+            m.train()
+
+
 @torch.no_grad()
-def roll_autoregressive_safe(model, seed_std: np.ndarray, H_total: int, H: int, device: str):
+def roll_autoregressive_safe(model, seed_std: np.ndarray, H_total: int, H: int, device: str, keep_dropout: bool = False):
     """
     Safe autoregressive roll:
     - model may return Tensor or (Tensor, extra...)
     - output may be [B,H,D] or [B,D,H] or [B, H*D]
     Return: numpy (H_total, D)
+
+    keep_dropout=True: không gọi model.eval() (để Dropout đang bật vẫn hoạt động).
     """
-    model.eval()
+    if not keep_dropout:
+        model.eval()
 
     seed_std = np.asarray(seed_std, dtype=np.float32)
     if seed_std.ndim != 2:
@@ -874,6 +971,38 @@ def roll_autoregressive_safe(model, seed_std: np.ndarray, H_total: int, H: int, 
 
     y = torch.cat(outs, dim=1).squeeze(0)  # [H_total,D]
     return y.numpy()
+
+
+@torch.no_grad()
+def roll_autoregressive_mc(model, seed_std: np.ndarray, H_total: int, H: int, device: str, mc_samples: int = 20):
+    """
+    MC Dropout sampling.
+    Return: numpy (S, H_total, D) trong standardized space.
+    """
+    mc_samples = int(max(1, mc_samples))
+
+    enable_dropout_only(model)
+
+    # ✅ mỗi lần gọi: base_seed random => luôn khác
+    base_seed = secrets.randbits(31)
+
+    samples = []
+    for s in range(mc_samples):
+        torch.manual_seed(base_seed + s)
+        if device == "cuda":
+            torch.cuda.manual_seed_all(base_seed + s)
+
+        y_std = roll_autoregressive_safe(
+            model,
+            seed_std=seed_std,
+            H_total=int(H_total),
+            H=int(H),
+            device=device,
+            keep_dropout=True,
+        )
+        samples.append(y_std)
+
+    return np.stack(samples, axis=0)  # (S, H_total, D)
 
 # =========================
 # Calibration a,b từ forecast_history
@@ -981,17 +1110,33 @@ def fit_calibration_from_history(
 
 
 def apply_calibration(pred_df: pd.DataFrame, calib: Dict[str, Dict], target_cols: List[str], keep_raw: bool = True) -> pd.DataFrame:
+    """
+    Áp calibration cho cả mean và (nếu có) p10/p90.
+    Nếu a < 0 thì swap p10/p90 cho đúng thứ tự.
+    """
     out = pred_df.copy()
+    suffixes = ["", "_p10", "_p90"]
+
     for c in target_cols:
-        if c not in out.columns:
-            continue
         if c not in calib:
             continue
-        if keep_raw and (f"{c}_raw" not in out.columns):
-            out[f"{c}_raw"] = pd.to_numeric(out[c], errors="coerce")
+
         a = float(calib[c]["a"])
         b = float(calib[c]["b"])
-        out[c] = a * pd.to_numeric(out[c], errors="coerce") + b
+
+        if keep_raw and (c in out.columns) and (f"{c}_raw" not in out.columns):
+            out[f"{c}_raw"] = pd.to_numeric(out[c], errors="coerce")
+
+        for suf in suffixes:
+            col = f"{c}{suf}"
+            if col in out.columns:
+                out[col] = a * pd.to_numeric(out[col], errors="coerce") + b
+
+        if a < 0 and (f"{c}_p10" in out.columns) and (f"{c}_p90" in out.columns):
+            tmp = out[f"{c}_p10"].copy()
+            out[f"{c}_p10"] = out[f"{c}_p90"]
+            out[f"{c}_p90"] = tmp
+
     return out
 
 # =========================
@@ -1020,12 +1165,7 @@ def _nan_rmse(true_arr, pred_arr) -> float:
     return float(np.sqrt(mse))
 
 
-# ✅ NEW: thống kê R2 để gộp global chuẩn
 def _r2_stats(true_arr, pred_arr):
-    """
-    Trả về thống kê để có thể gộp R2 nhiều file một cách chuẩn:
-    n, sse, sum_y, sum_y2, r2 (tính theo global mean của chính mảng này)
-    """
     y = np.asarray(true_arr, dtype=float).reshape(-1)
     yhat = np.asarray(pred_arr, dtype=float).reshape(-1)
     m = np.isfinite(y) & np.isfinite(yhat)
@@ -1052,7 +1192,6 @@ def _nan_r2(true_arr, pred_arr) -> float:
     return float(_r2_stats(true_arr, pred_arr)["r2"])
 
 
-# ✅ NEW: gộp R2 global từ các stats đã lưu trong df
 def _r2_global_from_stats(df_stats: pd.DataFrame, prefix: str) -> float:
     n = pd.to_numeric(df_stats.get(f"{prefix}__n"), errors="coerce").fillna(0).sum()
     if float(n) < 2:
@@ -1173,6 +1312,84 @@ def history_line_chart(df_valid: pd.DataFrame, xcol: str, ycol: str, title: str)
     return ch.configure(**_alt_theme_base())
 
 
+# def chart_actual_plus_forecast(actual_df: pd.DataFrame, pred_df: pd.DataFrame, date_col: str, target: str, last_n: int = 260):
+#     """Vẽ 2 đường: Actual và Forecast (không cần overlap)."""
+#     if actual_df is None or pred_df is None or actual_df.empty or pred_df.empty:
+#         return None
+
+#     act = actual_df[[date_col, target]].copy()
+#     prd = pred_df[[date_col, target]].copy()
+
+#     act[date_col] = _parse_dates_any(act[date_col])
+#     prd[date_col] = _parse_dates_any(prd[date_col])
+
+#     act[target] = pd.to_numeric(act[target], errors="coerce")
+#     prd[target] = pd.to_numeric(prd[target], errors="coerce")
+
+#     act = act.dropna(subset=[date_col, target]).sort_values(date_col)
+#     prd = prd.dropna(subset=[date_col, target]).sort_values(date_col)
+
+#     if int(last_n) > 0 and len(act) > int(last_n):
+#         act = act.tail(int(last_n))
+
+#     act["kind"] = "Actual"
+#     prd["kind"] = "Forecast"
+#     d = pd.concat([act, prd], ignore_index=True)
+
+#     base = alt.Chart(d).encode(
+#         x=alt.X(f"{date_col}:T", title="Ngày"),
+#         y=alt.Y(f"{target}:Q", title=target),
+#         color=alt.Color("kind:N", title=""),
+#         tooltip=[
+#             alt.Tooltip(f"{date_col}:T", title="Ngày"),
+#             alt.Tooltip("kind:N", title=""),
+#             alt.Tooltip(f"{target}:Q", title=target),
+#         ],
+#     )
+
+#     line = base.mark_line(strokeWidth=3).encode(strokeDash=alt.StrokeDash("kind:N", legend=None))
+#     pts = base.mark_circle(size=90, filled=True)
+
+#     return (line + pts).properties(height=360).interactive().configure(**_alt_theme_base())
+
+def chart_overlap_actual_vs_pred(merged: pd.DataFrame, date_col: str, target: str, last_n: int = 260):
+    """Vẽ 2 đường Actual vs Forecast chỉ trên phần overlap theo NGÀY."""
+    if merged is None or merged.empty:
+        return None
+
+    ca = f"{target}_actual"
+    cp = f"{target}_pred"
+    if ca not in merged.columns or cp not in merged.columns:
+        return None
+
+    d = merged[[date_col, ca, cp]].copy()
+    d[date_col] = _parse_dates_any(d[date_col])
+    d[ca] = pd.to_numeric(d[ca], errors="coerce")
+    d[cp] = pd.to_numeric(d[cp], errors="coerce")
+    d = d.dropna(subset=[date_col]).sort_values(date_col)
+
+    if int(last_n) > 0 and len(d) > int(last_n):
+        d = d.tail(int(last_n))
+
+    d = d.rename(columns={ca: "Actual", cp: "Forecast"})
+    long = d.melt(id_vars=[date_col], value_vars=["Actual", "Forecast"], var_name="kind", value_name="value")
+
+    base = alt.Chart(long).encode(
+        x=alt.X(f"{date_col}:T", title="Ngày"),
+        y=alt.Y("value:Q", title=target),
+        color=alt.Color("kind:N", title=""),
+        tooltip=[
+            alt.Tooltip(f"{date_col}:T", title="Ngày"),
+            alt.Tooltip("kind:N", title=""),
+            alt.Tooltip("value:Q", title=target),
+        ],
+    )
+
+    line = base.mark_line(strokeWidth=3)
+    pts  = base.mark_circle(size=90, filled=True)
+
+    return (line + pts).properties(height=360).interactive().configure(**_alt_theme_base())
+
 def history_rank_bar(df_valid: pd.DataFrame, ycol: str, title: str, top_k: int = 8, ascending=True):
     d = df_valid.dropna(subset=["train_last_date", ycol]).sort_values(ycol, ascending=ascending).head(int(top_k)).copy()
     if d.empty:
@@ -1191,7 +1408,9 @@ def history_rank_bar(df_valid: pd.DataFrame, ycol: str, title: str, top_k: int =
         .configure(**_alt_theme_base())
     )
 
-
+# =========================
+# forecast_history evaluation
+# =========================
 def eval_forecast_history_dir_local(history_dir: Path, actual_df: pd.DataFrame, date_col: str, target_cols: List[str], eps: float = 1e-8) -> pd.DataFrame:
     hdir = Path(history_dir)
     files = sorted(hdir.glob("forecast_until_*.csv"), key=lambda p: p.stat().st_mtime)
@@ -1228,15 +1447,12 @@ def eval_forecast_history_dir_local(history_dir: Path, actual_df: pd.DataFrame, 
         macro_rmse = np.nan
         macro_r2 = np.nan
 
-        # ✅ stats for global R2 aggregation
         macro__n = 0
         macro__sse = np.nan
         macro__sum_y = np.nan
         macro__sum_y2 = np.nan
 
         per = {}
-
-        # default per-target stats keys (so columns exist consistently)
         per_stats_default = {"n": 0, "sse": np.nan, "sum_y": np.nan, "sum_y2": np.nan, "r2": np.nan}
 
         if overlap_days > 0:
@@ -1310,7 +1526,6 @@ def eval_forecast_history_dir_local(history_dir: Path, actual_df: pd.DataFrame, 
             except Exception:
                 meta_generated_at = None
 
-        # ✅ row meta + macro
         row = {
             "file": f.name,
             "mtime": datetime.fromtimestamp(f.stat().st_mtime),
@@ -1322,14 +1537,12 @@ def eval_forecast_history_dir_local(history_dir: Path, actual_df: pd.DataFrame, 
             "macro_mse": macro_mse,
             "macro_rmse": macro_rmse,
             "macro_r2": macro_r2,
-            # ✅ stats for global R2
             "macro__n": macro__n,
             "macro__sse": macro__sse,
             "macro__sum_y": macro__sum_y,
             "macro__sum_y2": macro__sum_y2,
         }
 
-        # ✅ per-target columns + stats
         for c in target_cols:
             row[f"{c}_mae"] = per.get(c, {}).get("mae", np.nan)
             row[f"{c}_mape_%"] = per.get(c, {}).get("mape_%", np.nan)
@@ -1406,6 +1619,17 @@ def run_forecast(
 ):
     device_train = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # non-deterministic => mỗi run khác
+    try:
+        torch.use_deterministic_algorithms(False)
+    except Exception:
+        pass
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
+
+    use_unc = bool(train_cfg.get("use_uncertainty", True))
+    mc_samples = int(train_cfg.get("mc_samples", 20))
+
     missing = [c for c in TARGET_COLS if c not in df.columns]
     if missing:
         st.error(f"Thiếu các cột target trong dữ liệu: {missing}")
@@ -1450,7 +1674,9 @@ def run_forecast(
 
     ens_n = int(train_cfg.get("ensemble_n", 1))
     ens_n = max(1, min(ens_n, 7))
-    seeds = [SEED + i * 17 for i in range(ens_n)]
+
+    rng = np.random.default_rng(secrets.randbits(32))
+    seeds = rng.integers(1, 2**31 - 1, size=ens_n).tolist()
 
     Y_std_full = (Y - mu[:D]) / (sd[:D] + 1e-8)
     seed_std = Y_std_full[-K:]
@@ -1508,9 +1734,7 @@ def run_forecast(
                 base = si / max(1, len(seeds))
                 pb.progress(min(0.99, base + (ep / max(1, epochs)) / max(1, len(seeds))))
 
-            with st.spinner(
-                f"Training {si+1}/{len(seeds)} | loss={train_cfg['loss']} | epochs={train_cfg['epochs']} | focus=5d"
-            ):
+            with st.spinner("Đang dự đoán"):
                 model, _best_val = fit_model_better(
                     model=model,
                     tr_loader=tr_ld,
@@ -1534,23 +1758,48 @@ def run_forecast(
             except Exception:
                 pass
 
-        # ✅ forecast std (SAFE)
-        F_std = roll_autoregressive_safe(model, seed_std=seed_std, H_total=int(h_next), H=H, device=device_train)
-        F_std = _ensure_F_shape(F_std, int(h_next), D)
-        preds_std_list.append(F_std)
+        if use_unc and mc_samples > 1:
+            S_std = roll_autoregressive_mc(
+                model,
+                seed_std=seed_std,
+                H_total=int(h_next),
+                H=H,
+                device=device_train,
+                mc_samples=int(mc_samples),
+            )  # (S, h_next, D)
+            preds_std_list.append(S_std)
+        else:
+            F_std = roll_autoregressive_safe(model, seed_std=seed_std, H_total=int(h_next), H=H, device=device_train)
+            F_std = _ensure_F_shape(F_std, int(h_next), D)
+            preds_std_list.append(F_std)
 
     pb.progress(1.0)
-
-    F_std_ens = np.mean(np.stack(preds_std_list, axis=0), axis=0)  # (h_next, D)
-    F = F_std_ens * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
 
     last_date = pd.Timestamp(df[date_col].max()).normalize()
     idx = pd.bdate_range(last_date + BDay(1), periods=int(h_next))
 
-    out = pd.DataFrame(F, index=idx, columns=TARGET_COLS)
-    out_to_save = out.reset_index().rename(columns={"index": date_col})[[date_col] + TARGET_COLS].copy()
+    if use_unc and mc_samples > 1:
+        all_samples = np.concatenate(preds_std_list, axis=0)  # (S_total, h_next, D)
 
-    # ===== Calibration từ forecast_history (gom overlap) =====
+        mean_std = all_samples.mean(axis=0)
+        p10_std = np.quantile(all_samples, 0.10, axis=0)
+        p90_std = np.quantile(all_samples, 0.90, axis=0)
+
+        mean = mean_std * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
+        p10 = p10_std * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
+        p90 = p90_std * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
+
+        out = pd.DataFrame(mean, index=idx, columns=TARGET_COLS)
+        for j, c in enumerate(TARGET_COLS):
+            out[f"{c}_p10"] = p10[:, j]
+            out[f"{c}_p90"] = p90[:, j]
+    else:
+        F_std_ens = np.mean(np.stack(preds_std_list, axis=0), axis=0)  # (h_next, D)
+        F = F_std_ens * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
+        out = pd.DataFrame(F, index=idx, columns=TARGET_COLS)
+
+    out_to_save = out.reset_index().rename(columns={"index": date_col}).copy()
+
     calib = {}
     history_dir = RUN_OUTPUT_DIR / "forecast_history"
     hist_files = list(history_dir.glob("forecast_until_*.csv")) if history_dir.exists() else []
@@ -1595,8 +1844,8 @@ def main():
 
     st.session_state.setdefault("df_merged", None)
     st.session_state.setdefault("pred_df", None)
-    st.session_state.setdefault("actual_full", None)      # ✅ actual dùng để eval history (df_use)
-    st.session_state.setdefault("actual_clean", None)     # (optional) bản clean full
+    st.session_state.setdefault("actual_full", None)      # actual dùng để eval history (df_use)
+    st.session_state.setdefault("actual_clean", None)     # (optional) clean full
     st.session_state.setdefault("_df_use_for_prev5", None)
     st.session_state.setdefault("run_triggered", False)
 
@@ -1665,6 +1914,10 @@ def main():
                 "calib_halflife": 180,
             }
 
+            u1, u2 = st.columns([0.5, 0.5])
+            train_cfg["use_uncertainty"] = u1.checkbox("Uncertainty (MC Dropout)", value=True, key="use_uncertainty_cfg")
+            train_cfg["mc_samples"] = u2.number_input("MC samples", 5, 200, 20, 5, key="mc_samples_cfg")
+
         cc1, cc2, cc3, cc4 = st.columns([0.40, 0.20, 0.20, 0.20], vertical_alignment="bottom")
         with cc1:
             st.file_uploader(
@@ -1713,7 +1966,6 @@ def main():
                     df_updated = _interpolate_external(df_updated, date_col)
 
                     upload_last_date = base_last_before
-                    should_update_clean = False
                     actual_full = actual_full_before.copy()
                 else:
                     up_pp_obj = st.session_state.get("up_pp_main")
@@ -1727,7 +1979,6 @@ def main():
                         df_updated = actual_full_before.copy()
                         df_updated = _apply_fill_mode(df_updated, date_col, fill_mode)
                         df_updated = _interpolate_external(df_updated, date_col)
-                        should_update_clean = False
                         actual_full = actual_full_before.copy()
                     else:
                         upload_last_date = pd.Timestamp(upload_last_date).normalize()
@@ -1737,7 +1988,6 @@ def main():
                             df_updated = actual_full_before.copy()
                             df_updated = _apply_fill_mode(df_updated, date_col, fill_mode)
                             df_updated = _interpolate_external(df_updated, date_col)
-                            should_update_clean = False
                             actual_full = actual_full_before.copy()
                         else:
                             df_updated = None
@@ -1799,7 +2049,6 @@ def main():
 
                 h_next = int(st.session_state.get("h_next_main", DEFAULT_H_NEXT))
                 retrain = True
-
                 save_history_flag = bool(st.session_state.get("save_history_main", True))
 
                 st.session_state.actual_full = df_use.copy()
@@ -1828,19 +2077,72 @@ def main():
     soft_divider()
 
     # =========================
-    # SECTION 3: Forecast results + sanity
+    # SECTION 3: Forecast results
     # =========================
     with st.container(border=True):
-        section_header("table", "Kết quả dự đoán (đã áp calibration nếu có)")
-        st.dataframe(pred_df, use_container_width=True, height=280, hide_index=True)
+        section_header("table", "Kết quả dự đoán")
+
+        show_cols = [date_col] + TARGET_COLS
+        pred_view = pred_df[show_cols].copy() if all(c in pred_df.columns for c in show_cols) else pred_df.copy()
+
+        st.dataframe(pred_view, use_container_width=True, height=280, hide_index=True)
+
         st.download_button(
             "Tải forecast.csv",
-            data=pred_df.to_csv(index=False).encode("utf-8"),
+            data=pred_view.to_csv(index=False).encode("utf-8"),
             file_name="forecast.csv",
             mime="text/csv",
             use_container_width=True,
         )
 
+    with st.container(border=True):
+        section_header("arrows-left-right", "So sánh dự đoán và thực tế (overlap theo ngày)")
+
+        # Lấy actual từ session (không upload)
+        actual_cmp = st.session_state.get("actual_full")
+        if actual_cmp is None or len(actual_cmp) == 0:
+            actual_cmp = st.session_state.get("actual_clean")
+
+        if actual_cmp is None or len(actual_cmp) == 0:
+            st.info("Chưa có actual trong session.")
+        else:
+            pred_core = pred_df[[date_col] + TARGET_COLS].copy()
+            pred_core[date_col] = _parse_dates_any(pred_core[date_col])
+
+            actual_cmp2 = actual_cmp[[date_col] + TARGET_COLS].copy()
+            actual_cmp2[date_col] = _parse_dates_any(actual_cmp2[date_col])
+            actual_cmp2 = actual_cmp2.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+            for c in TARGET_COLS:
+                actual_cmp2[c] = pd.to_numeric(actual_cmp2[c], errors="coerce")
+
+            # ✅ CHỈ LẤY NGÀY TRÙNG NHAU
+            merged = pred_core.merge(actual_cmp2, on=date_col, how="inner", suffixes=("_pred", "_actual"))
+
+            if merged.empty:
+                st.warning("Không có ngày overlap: actual chưa có dữ liệu cho các ngày bạn dự đoán (đang dự đoán tương lai).")
+            else:
+                c1, c2 = st.columns([0.35, 0.65], vertical_alignment="bottom")
+                with c1:
+                    target_pick = st.selectbox("Chọn target", TARGET_COLS, index=0, key="cmp_pick_target_overlap")
+                with c2:
+                    last_n_cmp = st.number_input("Số ngày hiển thị", 30, 2000, 260, 10, key="cmp_lastn_overlap")
+
+                ch = chart_overlap_actual_vs_pred(merged, date_col, target_pick, last_n=int(last_n_cmp))
+                if ch is not None:
+                    st.altair_chart(ch, use_container_width=True)
+
+                met = _metrics_on_overlap(merged, date_col, TARGET_COLS, eps=1e-8)
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Overlap days", str(met["overlap_days"]))
+                m2.metric("Macro MAE", f'{met["macro_mae"]:.4f}' if np.isfinite(met["macro_mae"]) else "—")
+                m3.metric("Macro MAPE (%)", f'{met["macro_mape_%"]:.3f}' if np.isfinite(met["macro_mape_%"]) else "—")
+                m4.metric("Macro RMSE", f'{met["macro_rmse"]:.4f}' if np.isfinite(met["macro_rmse"]) else "—")
+                m5.metric("Macro R2", f'{met["macro_r2"]:.4f}' if np.isfinite(met["macro_r2"]) else "—")
+
+
+    # =========================
+    # SECTION: Sanity check
+    # =========================
     with st.container(border=True):
         section_header("flask", "Sanity check: 5 ngày dự đoán vs 5 ngày trước đó")
         df_use = st.session_state.get("_df_use_for_prev5")
@@ -1916,7 +2218,6 @@ def main():
         df_show = df_hist.copy()
         df_show["overlap_days"] = pd.to_numeric(df_show.get("overlap_days"), errors="coerce").fillna(0).astype(int)
 
-        # macro numeric
         for col in ["macro_mae", "macro_mape_%", "macro_mse", "macro_rmse", "macro_r2",
                     "macro__n", "macro__sse", "macro__sum_y", "macro__sum_y2"]:
             if col in df_show.columns:
@@ -1927,7 +2228,6 @@ def main():
         df_show["train_last_date"] = pd.to_datetime(df_show.get("train_last_date"), errors="coerce")
         df_show["generated_at"] = pd.to_datetime(df_show.get("generated_at"), errors="coerce")
 
-        # per-target numeric (+ stats)
         for c in TARGET_COLS:
             for suf in ["mae", "mape_%", "mse", "rmse", "r2"]:
                 col = f"{c}_{suf}"
@@ -1963,13 +2263,13 @@ def main():
 
             soft_divider()
 
-            r1, r2 = st.columns([0.5, 0.5], vertical_alignment="top")
+            r1, r2c = st.columns([0.5, 0.5], vertical_alignment="top")
             with r1:
                 section_header("trophy", "Top tốt nhất (MAPE thấp)")
                 ch = history_rank_bar(valid, "macro_mape_%", "Macro MAPE (%)", top_k=8, ascending=True)
                 if ch is not None:
                     st.altair_chart(ch, use_container_width=True)
-            with r2:
+            with r2c:
                 section_header("alert-triangle", "Top kém nhất (MAPE cao)")
                 ch2 = history_rank_bar(valid, "macro_mape_%", "Macro MAPE (%)", top_k=8, ascending=False)
                 if ch2 is not None:
@@ -1991,10 +2291,9 @@ def main():
         avg_macro_mse_w  = _wavg(valid["macro_mse"], w)
         avg_macro_rmse_w = _wavg(valid["macro_rmse"], w)
 
-        # ✅ FIX: R2 global (không mean theo file, không wavg)
         avg_macro_r2_global = _r2_global_from_stats(valid, "macro")
 
-        section_header("sum", "Trung bình lịch sử (weighted theo số ngày overlap)")
+        section_header("sum", "Trung bình lịch sử")
         s1, s2, s3, s4, s5, s6 = st.columns(6, vertical_alignment="top")
         with s1:
             stat_card("Số file có overlap", f"{len(valid):,}", icon="database")
@@ -2010,7 +2309,7 @@ def main():
             stat_card("Avg Macro R2 (global)", f"{avg_macro_r2_global:.4f}" if np.isfinite(avg_macro_r2_global) else "—", icon="chart-bar")
 
         soft_divider()
-        section_header("target-arrow", "Theo từng sản phẩm (weighted)")
+        section_header("target-arrow", "Theo từng sản phẩm")
         cols = st.columns(len(TARGET_COLS), vertical_alignment="top")
         for i, c in enumerate(TARGET_COLS):
             mae_col  = f"{c}_mae"
@@ -2023,7 +2322,6 @@ def main():
             v_mse  = _wavg(valid[mse_col], w) if mse_col in valid.columns else float("nan")
             v_rmse = _wavg(valid[rmse_col], w) if rmse_col in valid.columns else float("nan")
 
-            # ✅ FIX: R2 theo từng target (global từ stats)
             v_r2 = _r2_global_from_stats(valid, c)
 
             val = "—"

@@ -1,4 +1,3 @@
-# forecast_app/core.py
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,13 +25,16 @@ from .plots import plot_candlestick_preview
 from .train_focus5 import fit_model_better
 from .autoregressive import roll_autoregressive_safe, ensure_F_shape
 from .calibration import fit_calibration_from_history, apply_calibration
-from .metrics import pred5_vs_prev5_metrics_table, _wavg, _r2_global_from_stats
+from .metrics import pred5_vs_prev5_metrics_table
+
 from .history_eval import (
-    _history_signature,
-    _cached_eval_history,
-    history_line_chart,
-    history_rank_bar,
+    load_forecast_history_long,
+    load_actual_root,
+    build_compare_actual_vs_pred,
+    compute_metrics,
 )
+
+import altair as alt
 
 from src.dataio import build_merged, _ensure_date, _align_union_columns
 from src.features import _coerce_targets_numeric
@@ -46,23 +48,25 @@ from src.model.training import (
 from src.utils.paths import RUN_OUTPUT_DIR
 
 
-def save_forecast_history(out: pd.DataFrame, last_date: pd.Timestamp, h_next: int, date_col: str):
+def _ts_seed_base() -> int:
+    s = int(datetime.now().strftime("%Y%m%d%H%M%S%f"))
+    return int(s % 2_147_483_647)
+
+
+def save_forecast_history(out: pd.DataFrame, last_date: pd.Timestamp, h_next: int, date_col: str, run_seed_base: int):
     forecast_dir = RUN_OUTPUT_DIR / "forecast_history"
     forecast_dir.mkdir(parents=True, exist_ok=True)
-
-    for f in forecast_dir.glob(f"forecast_until_{pd.Timestamp(last_date).strftime('%Y%m%d')}_H{int(h_next)}_*.csv"):
-        try:
-            f.unlink()
-        except Exception:
-            pass
 
     out = out.copy()
     out[date_col] = _parse_dates_any(out[date_col])
     out["train_last_date"] = pd.Timestamp(last_date).normalize()
     out["generated_at"] = pd.Timestamp.now()
+    out["run_seed_base"] = int(run_seed_base)
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = forecast_dir / f"forecast_until_{pd.Timestamp(last_date).strftime('%Y%m%d')}_H{int(h_next)}_{ts}.csv"
-    out.to_csv(fname, index=False)
+
+    out.to_csv(fname, index=False, date_format="%d/%m/%Y %I:%M:%S %p")
     return fname
 
 
@@ -121,7 +125,9 @@ def run_forecast(
 
     ens_n = int(train_cfg.get("ensemble_n", 1))
     ens_n = max(1, min(ens_n, 7))
-    seeds = [SEED + i * 17 for i in range(ens_n)]
+
+    run_seed_base = _ts_seed_base()
+    seeds = [run_seed_base + i * 17 for i in range(ens_n)]
 
     Y_std_full = (Y - mu[:D]) / (sd[:D] + 1e-8)
     seed_std = Y_std_full[-K:]
@@ -141,7 +147,7 @@ def run_forecast(
 
     for si, seed_i in enumerate(seeds):
         set_seed(int(seed_i))
-        ckpt_path = RUN / f"hybrid_trinet_seed{seed_i}.pt"
+        ckpt_path = RUN / f"hybrid_trinet_seed{si}.pt"
 
         model = HybridTriNet(
             k=K,
@@ -179,9 +185,7 @@ def run_forecast(
                 base = si / max(1, len(seeds))
                 pb.progress(min(0.99, base + (ep / max(1, epochs)) / max(1, len(seeds))))
 
-            with st.spinner(
-                f"Đang dự đoán"
-            ):
+            with st.spinner("Đang dự đoán"):
                 model, _best_val = fit_model_better(
                     model=model,
                     tr_loader=tr_ld,
@@ -211,7 +215,7 @@ def run_forecast(
 
     pb.progress(1.0)
 
-    F_std_ens = np.mean(np.stack(preds_std_list, axis=0), axis=0)  # (h_next, D)
+    F_std_ens = np.mean(np.stack(preds_std_list, axis=0), axis=0)
     F = F_std_ens * sd_use_global.reshape(1, D) + mu_use_global.reshape(1, D)
 
     last_date = pd.Timestamp(df[date_col].max()).normalize()
@@ -245,7 +249,7 @@ def run_forecast(
 
     saved_ok = False
     if bool(save_history):
-        fname_hist = save_forecast_history(out_to_save, last_date, int(h_next), date_col)
+        fname_hist = save_forecast_history(out_to_save, last_date, int(h_next), date_col, run_seed_base=run_seed_base)
         st.caption(f"Đã lưu forecast_history: {fname_hist.name}")
         saved_ok = True
 
@@ -276,7 +280,6 @@ def main():
     st.session_state.setdefault("_df_use_for_prev5", None)
     st.session_state.setdefault("run_triggered", False)
 
-    # Load base clean
     base0 = None
     if clean_path_str and Path(clean_path_str).exists():
         try:
@@ -288,7 +291,6 @@ def main():
         except Exception:
             base0 = None
 
-    # ===== SECTION 1 =====
     with st.container(border=True):
         section_header("chart-candle", "Biểu đồ nến (dữ liệu)")
 
@@ -316,7 +318,6 @@ def main():
 
     soft_divider()
 
-    # ===== SECTION 2 =====
     with st.container(border=True):
         section_header("rocket", "Thiết lập dự đoán")
 
@@ -350,7 +351,7 @@ def main():
             st.checkbox(
                 "Lưu forecast_history",
                 value=True,
-                help="Bật để lưu forecast_until_*.csv (để sau này khi có dữ liệu thực tế overlap thì dashboard sẽ tính MAE/MAPE/MSE/RMSE/R2).",
+                help="Bật để lưu forecast_until_*.csv (để sau này khi có dữ liệu thực tế overlap thì dashboard sẽ tính metrics).",
                 key="save_history_main",
             )
         with cc4:
@@ -359,7 +360,6 @@ def main():
     if st.session_state.get("run_btn_main", False):
         st.session_state.run_triggered = True
 
-    # ===== RUN =====
     if st.session_state.run_triggered:
         st.session_state.run_triggered = False
 
@@ -435,7 +435,7 @@ def main():
                                 df_updated = merge_keep_nonnull(base2, add2, date_col)
 
                             df_updated = _apply_fill_mode(df_updated, date_col, fill_mode)
-                            df_updated = _interpolate_external(df_updated, date_col)
+                            df_updated = _interpolate_external(df_updated, date_col, fill_mode)
 
                             df_updated[date_col] = _parse_dates_any(df_updated[date_col])
                             new_last_after = df_updated[date_col].dropna().max()
@@ -468,6 +468,7 @@ def main():
                     df_use = df_use[df_use[date_col] <= upload_last_date].copy()
 
                 h_next = int(st.session_state.get("h_next_main", DEFAULT_H_NEXT))
+
                 retrain = True
                 save_history_flag = bool(st.session_state.get("save_history_main", True))
 
@@ -487,7 +488,6 @@ def main():
                 st.session_state.pred_df = pred_df
                 st.session_state._df_use_for_prev5 = df_use
 
-    # ===== BELOW hidden until pred exists =====
     pred_df = st.session_state.get("pred_df")
     if pred_df is None or len(pred_df) == 0:
         return
@@ -496,188 +496,169 @@ def main():
 
     with st.container(border=True):
         section_header("table", "Kết quả dự đoán")
-        st.dataframe(pred_df, use_container_width=True, height=280, hide_index=True)
+
+        show_cols = [date_col] + TARGET_COLS
+        pred_view = pred_df[show_cols].copy() if all(c in pred_df.columns for c in show_cols) else pred_df.copy()
+
+        st.dataframe(pred_view, use_container_width=True, height=280, hide_index=True)
+
         st.download_button(
             "Tải forecast.csv",
-            data=pred_df.to_csv(index=False).encode("utf-8"),
+            data=pred_view.to_csv(index=False, date_format="%d/%m/%Y %I:%M:%S %p").encode("utf-8"),
             file_name="forecast.csv",
             mime="text/csv",
             use_container_width=True,
         )
 
     with st.container(border=True):
-        section_header("flask", "Sanity check: 5 ngày dự đoán vs 5 ngày trước đó")
-        df_use = st.session_state.get("_df_use_for_prev5")
-        metrics_5, tbl_5 = pred5_vs_prev5_metrics_table(
-            df_use=df_use,
-            pred_df=pred_df,
-            date_col=date_col,
-            target_cols=TARGET_COLS,
-            n=5,
-            eps=1e-8,
-        )
-
-        if metrics_5 is None:
-            st.info("Không đủ dữ liệu để so sánh 5 ngày (cần >=5 dòng lịch sử và >=5 dòng dự đoán).")
-        else:
-            c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-            c1.metric("n_days", str(metrics_5["n_days"]))
-            c2.metric("Macro MAE", f'{metrics_5["macro_mae"]:.4f}')
-            c3.metric("Macro MAPE (%)", f'{metrics_5["macro_mape_%"]:.3f}')
-            c4.metric("Macro MSE", f'{metrics_5["macro_mse"]:.4f}')
-            c5.metric("Macro RMSE", f'{metrics_5["macro_rmse"]:.4f}')
-            r2v = metrics_5.get("macro_r2", np.nan)
-            c6.metric("Macro R2", f"{r2v:.4f}" if np.isfinite(r2v) else "—")
-            do_avg_mae = (metrics_5["DO 0.001%_mae"] + metrics_5["DO 0.05%_mae"]) / 2
-            c7.metric("DO avg MAE", f"{do_avg_mae:.4f}")
-            st.dataframe(tbl_5, use_container_width=True, height=320, hide_index=True)
-
-    soft_divider()
-
-    with st.container(border=True):
-        section_header("clipboard-check", "Đánh giá forecast_history (so với thực tế)")
-
-        actual_full = st.session_state.get("actual_full")
-        if actual_full is None:
-            try:
-                actual_full = _read_actual_full(clean_path_str, date_col)
-                st.session_state.actual_full = actual_full
-            except Exception as e:
-                st.error(f"Không đọc được dữ liệu thực tế từ clean.xlsx: {e}")
-                return
+        section_header("clipboard-check", "So sánh dự đoán với thực tế")
 
         hist_dir = RUN_OUTPUT_DIR / "forecast_history"
         if not hist_dir.exists():
             st.info("Chưa có thư mục forecast_history.")
             return
-        files = list(hist_dir.glob("forecast_until_*.csv"))
-        if not files:
-            st.info("Chưa có file forecast_until_*.csv trong forecast_history.")
+
+        root_xlsx = None
+        candidates = [
+            Path.cwd() / "base" / "root.xlsx",
+            Path(clean_path_str).with_name("root.xlsx"),
+            Path(clean_path_str).resolve().parent / "root.xlsx",
+            Path.cwd() / "root.xlsx",
+        ]
+        for pth in candidates:
+            if pth.exists():
+                root_xlsx = pth
+                break
+
+        if root_xlsx is None:
+            st.error("Không tìm thấy root.xlsx. Hãy đặt file tại base/root.xlsx hoặc cùng thư mục với clean.xlsx.")
             return
 
-        actual_eval = actual_full[[date_col] + [c for c in TARGET_COLS if c in actual_full.columns]].copy()
-        actual_eval[date_col] = _parse_dates_any(actual_eval[date_col])
-        actual_eval = actual_eval.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+        st.caption(f"History dir: {hist_dir} | Actual(root): {root_xlsx.name}")
 
-        act_last = actual_eval[date_col].dropna().max()
-        st.caption(
-            f"Actual(last) = {act_last} | History files = {len(files)} | "
-            "Lưu ý: Metrics chỉ có khi actual đã có dữ liệu cho các ngày từng dự đoán (overlap_days>0)."
+        history_long = load_forecast_history_long(hist_dir, targets=TARGET_COLS)
+        if history_long is None or history_long.empty:
+            st.warning("Không đọc được forecast_history (không thấy cột date/targets hợp lệ).")
+            return
+
+        actual_wide = load_actual_root(root_xlsx, targets=TARGET_COLS)
+        if actual_wide is None or actual_wide.empty:
+            st.warning("Không đọc được dữ liệu thực tế từ root.xlsx.")
+            return
+
+        mode = st.selectbox(
+            "Chọn dữ liệu forecast dùng để so sánh",
+            ["latest_asof (mỗi ngày lấy forecast mới nhất)", "chọn 1 file forecast_history"],
+            index=0,
         )
 
-        sig = _history_signature(hist_dir, clean_path_str) + f"|actual_last={act_last}|actual_n={len(actual_eval)}"
-        with st.spinner("Đang tính MAE/MAPE/MSE/RMSE/R2 từ forecast_history so với thực tế..."):
-            df_hist = _cached_eval_history(sig, actual_eval, date_col, tuple(TARGET_COLS))
+        history_use = history_long
+        if mode.startswith("chọn 1 file"):
+            file_opts = sorted(history_long["source_file"].unique().tolist())
+            sel_file = st.selectbox("Chọn file forecast_history", file_opts)
+            history_use = history_long[history_long["source_file"] == sel_file].copy()
 
-        if df_hist is None or df_hist.empty:
-            st.info("Không có kết quả để hiển thị.")
+        history_use = history_use.copy()
+        history_use["date"] = pd.to_datetime(history_use["date"], errors="coerce", dayfirst=True).dt.normalize()
+
+        actual_wide = actual_wide.copy()
+        actual_wide["date"] = pd.to_datetime(actual_wide["date"], errors="coerce", dayfirst=True).dt.normalize()
+
+        act_targets = [c for c in actual_wide.columns if c != "date"]
+        act_long = actual_wide.melt(
+            id_vars=["date"], value_vars=act_targets, var_name="target", value_name="actual"
+        )
+
+        hist = history_use.copy()
+        if mode.startswith("latest_asof"):
+            hist["_asof_sort"] = pd.to_datetime(hist["asof"], errors="coerce").fillna(pd.Timestamp("1900-01-01"))
+            hist = hist.sort_values(["date", "target", "_asof_sort"]).drop_duplicates(["date", "target"], keep="last")
+            hist = hist.drop(columns=["_asof_sort"])
+
+        cmp_long = hist.rename(columns={"yhat": "pred"}).merge(
+            act_long[["date", "target", "actual"]],
+            on=["date", "target"],
+            how="left",
+        )
+
+        cols_keep = [c for c in ["date", "target", "actual", "pred", "asof", "source_file"] if c in cmp_long.columns]
+        cmp_long = cmp_long[cols_keep].sort_values(["target", "date"]).reset_index(drop=True)
+
+        sel_targets = list(TARGET_COLS)
+        cmp_long = cmp_long[cmp_long["target"].isin(sel_targets)].copy()
+        if cmp_long.empty:
+            st.warning("Không có target hợp lệ trong history để so sánh.")
             return
 
-        df_show = df_hist.copy()
-        df_show["overlap_days"] = pd.to_numeric(df_show.get("overlap_days"), errors="coerce").fillna(0).astype(int)
-        df_show["train_last_date"] = pd.to_datetime(df_show.get("train_last_date"), errors="coerce")
-        df_show["generated_at"] = pd.to_datetime(df_show.get("generated_at"), errors="coerce")
-
-        valid = df_show[df_show["overlap_days"] > 0].copy()
-        if valid.empty:
-            st.warning("Chưa có file nào overlap với thực tế (overlap_days=0). Khi bạn cập nhật actual cho các ngày đã dự đoán thì sẽ có metrics.")
-            st.dataframe(df_show.sort_values(["train_last_date", "mtime"], na_position="last"),
-                         use_container_width=True, height=420, hide_index=True)
+        dmin = pd.to_datetime(cmp_long["date"]).min()
+        dmax = pd.to_datetime(cmp_long["date"]).max()
+        d1, d2 = st.date_input("Khoảng ngày (theo HISTORY)", value=(dmin.date(), dmax.date()))
+        d1 = pd.Timestamp(d1).normalize()
+        d2 = pd.Timestamp(d2).normalize()
+        cmp_long = cmp_long[(cmp_long["date"] >= d1) & (cmp_long["date"] <= d2)].copy()
+        if cmp_long.empty:
+            st.warning("Không còn dữ liệu trong khoảng ngày đã chọn.")
             return
 
-        t1, t2 = st.tabs(["Biểu đồ lịch sử", "Bảng chi tiết"])
-        with t1:
-            cA, cB = st.columns([0.55, 0.45], vertical_alignment="top")
-            with cA:
-                section_header("chart-line", "Xu hướng Macro MAPE (%) theo thời gian")
-                st.altair_chart(history_line_chart(valid, "train_last_date", "macro_mape_%", "Macro MAPE (%)"), use_container_width=True)
-            with cB:
-                section_header("chart-line", "Xu hướng Macro MAE theo thời gian")
-                st.altair_chart(history_line_chart(valid, "train_last_date", "macro_mae", "Macro MAE"), use_container_width=True)
+        cmp_eval = cmp_long.dropna(subset=["actual", "pred"]).copy()
 
-            soft_divider()
+        section_header("calculator", "Số liệu")
+        if cmp_eval.empty:
+            st.warning("Chưa có overlap để tính metrics")
+        else:
+            met = compute_metrics(cmp_eval)
+            st.dataframe(met, use_container_width=True, hide_index=True)
 
-            r1, r2 = st.columns([0.5, 0.5], vertical_alignment="top")
-            with r1:
-                section_header("trophy", "Top tốt nhất (MAPE thấp)")
-                ch = history_rank_bar(valid, "macro_mape_%", "Macro MAPE (%)", top_k=8, ascending=True)
-                if ch is not None:
-                    st.altair_chart(ch, use_container_width=True)
-            with r2:
-                section_header("alert-triangle", "Top kém nhất (MAPE cao)")
-                ch2 = history_rank_bar(valid, "macro_mape_%", "Macro MAPE (%)", top_k=8, ascending=False)
-                if ch2 is not None:
-                    st.altair_chart(ch2, use_container_width=True)
+        section_header("table", "Bảng so sánh theo target")
+        tabs_tbl = st.tabs(sel_targets)
+        for tab, t in zip(tabs_tbl, sel_targets):
+            with tab:
+                dd = cmp_long[cmp_long["target"] == t].copy().sort_values("date").reset_index(drop=True)
+                dd = dd.drop(columns=["target", "source_file"], errors="ignore")
+                keep_tbl = [c for c in ["date", "actual", "pred", "asof"] if c in dd.columns]
+                dd = dd[keep_tbl]
+                st.dataframe(dd, use_container_width=True, height=360, hide_index=True)
 
-        with t2:
-            st.dataframe(
-                df_show.sort_values(["train_last_date", "mtime"], na_position="last"),
-                use_container_width=True,
-                height=420,
-                hide_index=True,
-            )
+        section_header("chart-line", "Biểu đồ thực tế với Dự đoán")
 
-        soft_divider()
+        dash_scale = alt.Scale(domain=["actual", "pred"], range=[[1, 0], [6, 3]])
 
-        w = valid["overlap_days"]
-        avg_macro_mae_w  = _wavg(valid["macro_mae"], w)
-        avg_macro_mape_w = _wavg(valid["macro_mape_%"], w)
-        avg_macro_mse_w  = _wavg(valid["macro_mse"], w)
-        avg_macro_rmse_w = _wavg(valid["macro_rmse"], w)
+        tabs = st.tabs(sel_targets)
+        for tab, t in zip(tabs, sel_targets):
+            with tab:
+                dd = cmp_long[cmp_long["target"] == t].copy()
+                dd = dd.sort_values("date")
 
-        avg_macro_r2_global = _r2_global_from_stats(valid, "macro")
-
-        section_header("sum", "Trung bình lịch sử")
-        s1, s2, s3, s4, s5, s6 = st.columns(6, vertical_alignment="top")
-        with s1:
-            stat_card("Số file có overlap", f"{len(valid):,}", icon="database")
-        with s2:
-            stat_card("Avg Macro MAE (wavg)", f"{avg_macro_mae_w:.4f}" if np.isfinite(avg_macro_mae_w) else "—", icon="ruler")
-        with s3:
-            stat_card("Avg Macro MAPE (wavg)", f"{avg_macro_mape_w:.3f}%" if np.isfinite(avg_macro_mape_w) else "—", icon="percentage")
-        with s4:
-            stat_card("Avg Macro MSE (wavg)", f"{avg_macro_mse_w:.4f}" if np.isfinite(avg_macro_mse_w) else "—", icon="calculator")
-        with s5:
-            stat_card("Avg Macro RMSE (wavg)", f"{avg_macro_rmse_w:.4f}" if np.isfinite(avg_macro_rmse_w) else "—", icon="arrows-diagonal")
-        with s6:
-            stat_card("Avg Macro R2 (global)", f"{avg_macro_r2_global:.4f}" if np.isfinite(avg_macro_r2_global) else "—", icon="chart-bar")
-
-        soft_divider()
-        section_header("target-arrow", "Theo từng sản phẩm")
-        cols = st.columns(len(TARGET_COLS), vertical_alignment="top")
-        for i, c in enumerate(TARGET_COLS):
-            mae_col  = f"{c}_mae"
-            mape_col = f"{c}_mape_%"
-            mse_col  = f"{c}_mse"
-            rmse_col = f"{c}_rmse"
-
-            v_mae  = _wavg(valid[mae_col], w) if mae_col in valid.columns else float("nan")
-            v_mape = _wavg(valid[mape_col], w) if mape_col in valid.columns else float("nan")
-            v_mse  = _wavg(valid[mse_col], w) if mse_col in valid.columns else float("nan")
-            v_rmse = _wavg(valid[rmse_col], w) if rmse_col in valid.columns else float("nan")
-            v_r2 = _r2_global_from_stats(valid, c)
-
-            val = "—"
-            parts = []
-            if np.isfinite(v_mae):  parts.append(f"MAE={v_mae:.4f}")
-            if np.isfinite(v_mape): parts.append(f"MAPE={v_mape:.3f}%")
-            if np.isfinite(v_mse):  parts.append(f"MSE={v_mse:.4f}")
-            if np.isfinite(v_rmse): parts.append(f"RMSE={v_rmse:.4f}")
-            if np.isfinite(v_r2):   parts.append(f"R2={v_r2:.4f}")
-            if parts:
-                val = "<br/>".join(parts)
-
-            with cols[i]:
-                st.markdown(
-                    f"""
-                    <div class="stat-card">
-                      <div class="row">
-                        <div class="ttl">{c}</div>
-                        <div class="badge">{ti("droplet")}</div>
-                      </div>
-                      <div class="val" style="font-size:20px;">{val}</div>
-                      <div class="sub">MAE/MAPE/MSE/RMSE: wavg overlap | R2: global từ stats</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                plot_df = dd.melt(
+                    id_vars=[c for c in ["date", "target", "asof"] if c in dd.columns],
+                    value_vars=[c for c in ["actual", "pred"] if c in dd.columns],
+                    var_name="series",
+                    value_name="value",
                 )
+
+                ch = (
+                    alt.Chart(plot_df.dropna(subset=["date"]))
+                    .mark_line(point=False, strokeWidth=2)
+                    .encode(
+                        x=alt.X("date:T", title=None, axis=alt.Axis(labelAngle=-20)),
+                        y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=False)),
+                        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+                        strokeDash=alt.StrokeDash("series:N", scale=dash_scale, legend=None),
+                        tooltip=[
+                            alt.Tooltip("date:T", title="Date"),
+                            alt.Tooltip("series:N", title="Series"),
+                            alt.Tooltip("value:Q", title="Value", format=".4f"),
+                            alt.Tooltip("asof:T", title="As of"),
+                        ],
+                    )
+                    .properties(title=t, height=340)
+                    .interactive()
+                    .configure_view(stroke=None)
+                    .configure_axis(grid=True)
+                )
+
+                st.altair_chart(ch, use_container_width=True)
+
+        # with st.expander("Bảng compare chi tiết (theo HISTORY)", expanded=False):
+        #     dd_all = cmp_long.sort_values(["target", "date"]).drop(columns=["source_file"], errors="ignore")
+        #     st.dataframe(dd_all, use_container_width=True, height=420, hide_index=True)
