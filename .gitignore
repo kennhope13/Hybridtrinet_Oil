@@ -1,4 +1,5 @@
 __pycache__/
+venv
 # logs/
 # *.log
 # data/base/*.xlsx
