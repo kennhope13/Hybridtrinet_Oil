@@ -1,12 +1,13 @@
+# Python venv
+venv/
+.venv/
+
+# Python cache
 __pycache__/
-venv
-# logs/
-# *.log
-# data/base/*.xlsx
-# data/upload_samples/*
-# data/external/*
-# config/secrets.env
-# *.env
-# .env.*
-# artifacts/run_output
-# app_forecast.py
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter/OS
+.ipynb_checkpoints/
+.DS_Store
