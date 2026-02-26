@@ -570,7 +570,7 @@ def main():
                 key="save_history_main",
             )
         with cc4:
-            st.button("Chạy dự đoán", width="stretch", key="run_btn_main", type="primary")
+            st.button("Chạy dự đoán", use_container_width=True, key="run_btn_main", type="primary")
 
     if st.session_state.get("run_btn_main", False):
         st.session_state.run_triggered = True
@@ -867,7 +867,7 @@ def main():
             st.warning("Chưa có overlap để tính metrics")
         else:
             met = compute_metrics(cmp_eval[["date", "target", "actual", "pred"]])
-            st.dataframe(met, width="stretch", hide_index=True)
+            st.dataframe(met, use_container_width=True, hide_index=True)
 
         # show_only_actual = st.checkbox("Chỉ hiển thị dòng có actual", value=False, key="show_only_actual_tbl")
 
@@ -881,7 +881,7 @@ def main():
                 # if show_only_actual:
                 #     dd = dd.dropna(subset=["actual"])
                 keep_tbl = [c for c in ["date", "actual", "pred", "train_last_date", "generated_at"] if c in dd.columns]
-                st.dataframe(dd[keep_tbl], width="stretch", height=360, hide_index=True)
+                st.dataframe(dd[keep_tbl], use_container_width=True, height=360, hide_index=True)
 
         # overlay lines (30/60/100) - latest_asof per date,target
         overlay_hs = st.multiselect(
