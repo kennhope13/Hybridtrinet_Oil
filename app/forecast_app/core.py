@@ -103,7 +103,6 @@ def _read_history_wide_file_to_long(
         long_df["run_seed_base"] = np.nan
 
     long_df["yhat"] = pd.to_numeric(long_df["yhat"], errors="coerce")
-
     long_df = long_df.dropna(subset=["date", "target"]).reset_index(drop=True)
     return long_df
 
@@ -152,7 +151,10 @@ def latest_asof_per_date_target(hist_long: pd.DataFrame) -> pd.DataFrame:
 
     if "_asof_sort" not in df.columns:
         df["_asof_sort"] = pd.to_datetime(df.get("train_last_date"), errors="coerce", dayfirst=True).dt.normalize()
-        df["_asof_sort"] = df["_asof_sort"].where(df["_asof_sort"].notna(), pd.to_datetime(df.get("generated_at"), errors="coerce", dayfirst=True))
+        df["_asof_sort"] = df["_asof_sort"].where(
+            df["_asof_sort"].notna(),
+            pd.to_datetime(df.get("generated_at"), errors="coerce", dayfirst=True),
+        )
         df["_asof_sort"] = df["_asof_sort"].fillna(pd.Timestamp("1900-01-01"))
 
     df = (
@@ -175,6 +177,63 @@ def _count_history_files(hist_dir: Path) -> int:
     if hist_dir is None or (not hist_dir.exists()):
         return 0
     return len(list(hist_dir.glob("forecast_until_*.csv")))
+
+
+def _filter_valid_forecast(hist_long: pd.DataFrame) -> pd.DataFrame:
+    """
+    Lọc các dòng forecast hợp lệ:
+    - date không null, target không null
+    - yhat numeric
+    - nếu có train_last_date: chỉ giữ date > train_last_date
+    """
+    if hist_long is None or hist_long.empty:
+        return pd.DataFrame(columns=["date", "target", "yhat", "train_last_date", "generated_at", "run_seed_base", "source_file"])
+
+    df = hist_long.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True).dt.normalize()
+    df = df.dropna(subset=["date", "target"]).copy()
+    df["yhat"] = pd.to_numeric(df["yhat"], errors="coerce")
+    df = df.dropna(subset=["yhat"]).copy()
+
+    if "train_last_date" in df.columns:
+        tld = pd.to_datetime(df["train_last_date"], errors="coerce", dayfirst=True).dt.normalize()
+        df = df[(tld.isna()) | (df["date"] > tld)].copy()
+
+    return df.reset_index(drop=True)
+
+
+def _agg_mean_by_date_target(hist_long: pd.DataFrame) -> pd.DataFrame:
+    """
+    Gộp forecast trùng (date,target) bằng trung bình yhat.
+    Giữ thêm n_forecasts + train_last_date_max + generated_at_max để xem.
+    """
+    if hist_long is None or hist_long.empty:
+        return pd.DataFrame(columns=["date", "target", "yhat", "n_forecasts", "train_last_date", "generated_at"])
+
+    df = _filter_valid_forecast(hist_long)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "target", "yhat", "n_forecasts", "train_last_date", "generated_at"])
+
+    if "train_last_date" in df.columns:
+        df["train_last_date"] = pd.to_datetime(df["train_last_date"], errors="coerce", dayfirst=True).dt.normalize()
+    else:
+        df["train_last_date"] = pd.NaT
+
+    if "generated_at" in df.columns:
+        df["generated_at"] = pd.to_datetime(df["generated_at"], errors="coerce", dayfirst=True)
+    else:
+        df["generated_at"] = pd.NaT
+
+    g = (
+        df.groupby(["date", "target"], as_index=False)
+          .agg(
+              yhat=("yhat", "mean"),
+              n_forecasts=("yhat", "size"),
+              train_last_date=("train_last_date", "max"),
+              generated_at=("generated_at", "max"),
+          )
+    )
+    return g
 
 
 # ============================================================
@@ -243,7 +302,7 @@ def backfill_by_horizon_period(
                 date_col=date_col,
                 h_next=int(hh),
                 save_history=True,
-                retrain=True,   # backtest đúng
+                retrain=True,
                 train_cfg=train_cfg,
                 actual_full=sub,
             )
@@ -752,71 +811,6 @@ def main():
             st.error("Không tìm thấy root.xlsx. Hãy đặt file tại base/root.xlsx hoặc cùng thư mục với clean.xlsx.")
             return
 
-        # # -------- Backfill theo chu kỳ H (KHÔNG CẦN UPLOAD) --------
-        # with st.expander("Backfill theo chu kỳ H (30/60/100): mỗi H ngày dự đoán 1 lần đến nay (không cần upload)", expanded=False):
-        #     try:
-        #         df_full_train = _read_actual_full(clean_path_str, date_col)
-        #         df_full_train = df_full_train.copy()
-        #         df_full_train[date_col] = _parse_dates_any(df_full_train[date_col])
-        #         df_full_train = df_full_train.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
-        #     except Exception as e:
-        #         df_full_train = None
-        #         st.error(f"Lỗi đọc clean.xlsx để backfill: {e}")
-
-        #     if df_full_train is None or df_full_train.empty:
-        #         st.warning("Không có dữ liệu clean.xlsx để backfill.")
-        #     else:
-        #         dmin = pd.Timestamp(df_full_train[date_col].min()).normalize()
-        #         dmax = pd.Timestamp(df_full_train[date_col].max()).normalize()
-
-        #         c1, c2 = st.columns([0.5, 0.5], vertical_alignment="bottom")
-        #         with c1:
-        #             bf_start = st.date_input(
-        #                 "Start asof",
-        #                 value=max(START0, dmin).date(),
-        #                 min_value=dmin.date(),
-        #                 max_value=dmax.date(),
-        #                 key="bf_period_start",
-        #             )
-        #         with c2:
-        #             bf_end = st.date_input(
-        #                 "End asof (đến nay)",
-        #                 value=dmax.date(),
-        #                 min_value=dmin.date(),
-        #                 max_value=dmax.date(),
-        #                 key="bf_period_end",
-        #             )
-
-        #         bf_horizons = st.multiselect(
-        #             "Chọn H cần backfill (mỗi H ngày chạy 1 lần)",
-        #             [30, 60, 100],
-        #             default=[30, 100],
-        #             key="bf_period_horizons",
-        #         )
-
-        #         st.caption(
-        #             "Số file history hiện có: "
-        #             + " | ".join([f"H={hh}: {_count_history_files(_history_dir_for_h(int(hh)))}" for hh in [30, 60, 100]])
-        #         )
-
-        #         with st.expander("Cấu hình train cho backfill (khuyên dùng nhẹ)", expanded=False):
-        #             ccc = st.columns(3)
-        #             train_cfg_bf = dict(train_cfg)
-        #             train_cfg_bf["epochs"] = ccc[0].number_input("Epochs (backfill)", 5, 200, 30, 5, key="bf_epochs")
-        #             train_cfg_bf["batch"] = ccc[1].number_input("Batch (backfill)", 16, 512, int(train_cfg_bf["batch"]), 16, key="bf_batch")
-        #             train_cfg_bf["lr"] = ccc[2].number_input("LR (backfill)", 1e-6, 5e-3, float(train_cfg_bf["lr"]), 1e-5, format="%.6f", key="bf_lr")
-
-        #         if st.button("Chạy backfill theo chu kỳ H", type="primary", key="bf_period_run"):
-        #             done, total = backfill_by_horizon_period(
-        #                 df_full=df_full_train,
-        #                 date_col=date_col,
-        #                 start_date=pd.Timestamp(bf_start).normalize(),
-        #                 end_date=pd.Timestamp(bf_end).normalize(),
-        #                 horizons=[int(x) for x in bf_horizons],
-        #                 train_cfg=train_cfg_bf,
-        #             )
-        #             st.success(f"Backfill xong: {done}/{total} lượt.")
-
         # -------- Evaluate/plot --------
         h_eval = st.selectbox("Kịch bản hiển thị (H)", [5, 30, 60, 100], index=0, key="hist_h_eval")
         hist_dir = _history_dir_for_h(int(h_eval))
@@ -824,7 +818,7 @@ def main():
             st.info("Chưa có thư mục forecast_history cho H này.")
             return
 
-        # đọc history bằng loader robust (không phụ thuộc format trong history_eval.py)
+        # đọc history bằng loader robust
         history_long = _load_history_long_from_dir(hist_dir, targets=list(TARGET_COLS), date_col_hint=date_col)
         if history_long is None or history_long.empty:
             st.warning("Chưa có forecast_history (hoặc không đọc được file forecast_until_*.csv).")
@@ -848,39 +842,137 @@ def main():
         act_long["actual"] = pd.to_numeric(act_long["actual"], errors="coerce")
         act_long = act_long.dropna(subset=["date"]).copy()
 
-        hist = latest_asof_per_date_target(history_use)
+        # ====== chọn chế độ dùng history ======
+        hist_mode = st.selectbox(
+            "Cách dùng forecast_history để tính metrics",
+            [
+                "Trung bình theo (date,target) từ tất cả file",
+                "Tính trên mọi dòng (đếm overlap)",
+                "Chỉ dùng forecast mới nhất (latest)",
+                "Chọn forecast tốt nhất theo actual (ORACLE - upper bound)",
+            ],
+            index=0,
+            key="hist_mode_eval",
+            help=(
+                "• Trung bình: nếu 1 ngày được dự báo nhiều lần, lấy mean(pred) rồi mới so với actual.\n"
+                "• Đếm overlap: mỗi lần dự báo là 1 điểm -> ngày trùng sẽ được tính nhiều lần.\n"
+                "• Latest: giữ đúng 1 forecast mới nhất cho mỗi (date,target).\n"
+                "• ORACLE: chọn dự báo có sai số nhỏ nhất so với actual cho mỗi (date,target) (chỉ để tham khảo trần trên)."
+            ),
+        )
 
+        # ====== build hist theo mode ======
+        if hist_mode.startswith("Chọn forecast tốt nhất"):
+            # dùng latest để hiển thị full timeline (cả future), rồi overwrite bằng oracle cho ngày có actual
+            hist_latest_full = latest_asof_per_date_target(history_use)
+            hist_candidates = _filter_valid_forecast(history_use)  # tất cả dòng hợp lệ làm ứng viên
+
+            # merge candidates với actual để tính lỗi
+            cand_cmp = hist_candidates.rename(columns={"yhat": "pred"}).merge(
+                act_long[["date", "target", "actual"]],
+                on=["date", "target"],
+                how="inner",
+            )
+            cand_cmp["pred"] = pd.to_numeric(cand_cmp["pred"], errors="coerce")
+            cand_cmp["actual"] = pd.to_numeric(cand_cmp["actual"], errors="coerce")
+            cand_cmp = cand_cmp.dropna(subset=["pred", "actual"]).copy()
+
+            if cand_cmp.empty:
+                # fallback: nếu không có overlap thì vẫn dùng latest
+                hist = hist_latest_full.copy()
+                hist["_picked_mode"] = "LATEST_FALLBACK"
+            else:
+                cand_cmp["ae"] = (cand_cmp["pred"] - cand_cmp["actual"]).abs()
+                idx = cand_cmp.groupby(["date", "target"])["ae"].idxmin()
+                best = cand_cmp.loc[idx].drop(columns=["ae"]).copy()
+
+                # best đang có pred, actual; đổi lại yhat
+                keep_cols = ["date", "target", "pred"]
+                meta_cols = [c for c in ["train_last_date", "generated_at", "run_seed_base", "source_file"] if c in best.columns]
+                best2 = best[keep_cols + meta_cols].rename(columns={"pred": "yhat"}).copy()
+
+                # overwrite latest_full theo key (date,target)
+                hist_latest_full = hist_latest_full.copy()
+                hist_latest_full["_key"] = hist_latest_full["date"].astype(str) + "||" + hist_latest_full["target"].astype(str)
+                best2["_key"] = best2["date"].astype(str) + "||" + best2["target"].astype(str)
+
+                best_map = best2.set_index("_key")
+                hist_map = hist_latest_full.set_index("_key")
+
+                # update yhat + metadata nếu có
+                for col in ["yhat"] + meta_cols:
+                    if col in best_map.columns and col in hist_map.columns:
+                        hist_map.loc[best_map.index.intersection(hist_map.index), col] = best_map.loc[
+                            best_map.index.intersection(hist_map.index), col
+                        ]
+
+                hist = hist_map.reset_index(drop=False).drop(columns=["_key"], errors="ignore")
+                hist["_picked_mode"] = "ORACLE_WHERE_POSSIBLE"
+
+        elif hist_mode.startswith("Trung bình"):
+            hist = _agg_mean_by_date_target(history_use)
+            hist["_picked_mode"] = "MEAN_DATE_TARGET"
+        elif hist_mode.startswith("Tính trên mọi dòng"):
+            hist = _filter_valid_forecast(history_use)
+            hist["_picked_mode"] = "ALL_ROWS_OVERLAP"
+        else:
+            hist = latest_asof_per_date_target(history_use)
+            hist["_picked_mode"] = "LATEST_ONLY"
+
+        if hist is None or hist.empty:
+            st.warning("History sau khi lọc/gộp đang rỗng.")
+            return
+
+        # merge lịch sử dự đoán với actual
         cmp_base = hist.rename(columns={"yhat": "pred"}).merge(
             act_long[["date", "target", "actual"]],
             on=["date", "target"],
             how="left",
         )
         cmp_base["pred"] = pd.to_numeric(cmp_base["pred"], errors="coerce")
+        cmp_base["actual"] = pd.to_numeric(cmp_base["actual"], errors="coerce")
         cmp_base = cmp_base[cmp_base["target"].isin(list(TARGET_COLS))].copy()
         cmp_base = cmp_base[cmp_base["date"] >= START0].copy()
         cmp_base = cmp_base.sort_values(["target", "date"]).reset_index(drop=True)
 
         cmp_eval = cmp_base.dropna(subset=["actual", "pred"]).copy()
 
-        section_header("calculator", "Số liệu ")
+        section_header("calculator", "Số liệu")
         if cmp_eval.empty:
             st.warning("Chưa có overlap để tính metrics")
         else:
             met = compute_metrics(cmp_eval[["date", "target", "actual", "pred"]])
             st.dataframe(met, use_container_width=True, hide_index=True)
 
-        # show_only_actual = st.checkbox("Chỉ hiển thị dòng có actual", value=False, key="show_only_actual_tbl")
+            st.caption(f"Matched points: {len(cmp_eval):,} | Mode={hist.get('_picked_mode', 'N/A').iloc[0] if '_picked_mode' in hist.columns and len(hist)>0 else 'N/A'}")
 
+        # ====== Bảng so sánh theo target ======
         section_header("table", "Bảng so sánh theo target")
+
+        show_compact = True
+        if hist_mode.startswith("Tính trên mọi dòng"):
+            show_compact = st.checkbox("Gộp theo (date,target) để xem gọn (table/plot)", value=True, key="cmp_compact")
+
+        cmp_for_table = cmp_base.copy()
+        if hist_mode.startswith("Tính trên mọi dòng") and show_compact:
+            agg = (
+                cmp_base.groupby(["date", "target"], as_index=False)
+                        .agg(
+                            actual=("actual", "first"),
+                            pred=("pred", "mean"),
+                            n_forecasts=("pred", "size"),
+                        )
+            )
+            cmp_for_table = agg
+
         tabs_tbl = st.tabs(list(TARGET_COLS))
         for tab, t in zip(tabs_tbl, list(TARGET_COLS)):
             with tab:
-                dd = cmp_base[cmp_base["target"] == t].copy().sort_values("date").reset_index(drop=True)
+                dd = cmp_for_table[cmp_for_table["target"] == t].copy().sort_values("date").reset_index(drop=True)
                 dd["actual"] = pd.to_numeric(dd["actual"], errors="coerce")
                 dd["pred"] = pd.to_numeric(dd["pred"], errors="coerce")
-                # if show_only_actual:
-                #     dd = dd.dropna(subset=["actual"])
-                keep_tbl = [c for c in ["date", "actual", "pred", "train_last_date", "generated_at"] if c in dd.columns]
+
+                keep_tbl = [c for c in ["date", "actual", "pred", "n_forecasts", "train_last_date", "generated_at"] if c in dd.columns]
                 st.dataframe(dd[keep_tbl], use_container_width=True, height=360, hide_index=True)
 
         # overlay lines (30/60/100) - latest_asof per date,target
@@ -918,9 +1010,17 @@ def main():
 
         umax = max(s.max() for s in date_candidates)
         ud1 = START0
-        ud2 = pd.Timestamp(umax).normalize()   
+        ud2 = pd.Timestamp(umax).normalize()
 
         section_header("chart-line", "Biểu đồ thực tế với Dự đoán")
+
+        # dùng bản gọn cho plot để tránh “răng cưa” khi overlap
+        cmp_for_plot = cmp_base.copy()
+        if hist_mode.startswith("Tính trên mọi dòng"):
+            cmp_for_plot = (
+                cmp_base.groupby(["date", "target"], as_index=False)
+                        .agg(actual=("actual", "first"), pred=("pred", "mean"))
+            )
 
         tabs = st.tabs(list(TARGET_COLS))
         for tab, t in zip(tabs, list(TARGET_COLS)):
@@ -934,7 +1034,7 @@ def main():
                 a["series"] = "actual"
                 frames.append(a)
 
-                b = cmp_base[cmp_base["target"] == t][["date", "pred"]].copy()
+                b = cmp_for_plot[cmp_for_plot["target"] == t][["date", "pred"]].copy()
                 b["date"] = pd.to_datetime(b["date"], errors="coerce", dayfirst=True).dt.normalize()
                 b["pred"] = pd.to_numeric(b["pred"], errors="coerce")
                 b = b.rename(columns={"pred": "value"})
@@ -985,7 +1085,8 @@ def main():
                     .configure_axis(grid=True)
                 )
 
-                st.altair_chart(ch, width="stretch")
+                # FIX Streamlit altair
+                st.altair_chart(ch, use_container_width=True)
 
 
 if __name__ == "__main__":
