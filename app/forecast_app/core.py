@@ -39,8 +39,7 @@ START0 = pd.Timestamp("2025-09-19").normalize()
 
 
 def _ts_seed_base() -> int:
-    s = int(datetime.now().strftime("%Y%m%d%H%M%S%f"))
-    return int(s % 2_147_483_647)
+    return 20260320
 
 
 def _history_dir_for_h(h: int) -> Path:
@@ -302,7 +301,7 @@ def backfill_by_horizon_period(
                 date_col=date_col,
                 h_next=int(hh),
                 save_history=True,
-                retrain=True,
+                retrain=False,
                 train_cfg=train_cfg,
                 actual_full=sub,
             )
@@ -366,11 +365,13 @@ def run_forecast(
 
     val_len = max(int(T * VAL_RATIO), K + H + 1)
     train_len = T - val_len
-    Y_tr, Y_val = Y[:train_len], Y[train_len - K :]
+
+    Y_tr, Y_val = Y[:train_len], Y[train_len - K:]
 
     Ytr_std, mu, sd = standardize(Y_tr)
     mu = np.asarray(mu, dtype=np.float32).reshape(-1)
     sd = np.asarray(sd, dtype=np.float32).reshape(-1)
+
     if mu.size < D or sd.size < D:
         st.error(f"mu/sd không khớp số target D={D}. mu={mu.shape}, sd={sd.shape}")
         return None, False
@@ -393,13 +394,15 @@ def run_forecast(
     seeds = [run_seed_base + i * 17 for i in range(ens_n)]
 
     Y_std_full = (Y - mu[:D]) / (sd[:D] + 1e-8)
-    seed_std = Y_std_full[-K:]
+    seed_std = Y_std_full[-K:]   # seed cuối cùng để rollout
 
     preds_std_list = []
+
     pb = st.progress(0.0)
 
     mu_path = RUN / "mu.npy"
     sd_path = RUN / "sd.npy"
+
     try:
         np.save(mu_path, mu[:D])
         np.save(sd_path, sd[:D])
@@ -444,7 +447,6 @@ def run_forecast(
                 loaded = False
 
         if not loaded:
-
             def _status_cb(ep, epochs, tr_loss, val_mae, lr_val):
                 base = si / max(1, len(seeds))
                 pb.progress(min(0.99, base + (ep / max(1, epochs)) / max(1, len(seeds))))
@@ -468,12 +470,28 @@ def run_forecast(
                     focus_h=5,
                     focus_w=float(train_cfg.get("focus_w", 3.0)),
                 )
+
             try:
                 torch.save(model.state_dict(), ckpt_path)
             except Exception:
                 pass
 
-        F_std = roll_autoregressive_safe(model, seed_std=seed_std, H_total=int(h_next), H=H, device=device_train)
+        # =========================
+        # BLOCK-5 ROLLOUT
+        # =========================
+        # 5 ngày  -> 1 block
+        # 30 ngày -> 6 block
+        # 60 ngày -> 12 block
+        # 100 ngày -> 20 block
+        F_std = roll_autoregressive_safe(
+            model,
+            seed_std=seed_std,
+            H_total=int(h_next),
+            H=H,
+            device=device_train,
+            step_size=5,
+        )
+
         F_std = ensure_F_shape(F_std, int(h_next), D)
         preds_std_list.append(F_std)
 
@@ -487,11 +505,12 @@ def run_forecast(
 
     out = pd.DataFrame(F, index=idx, columns=TARGET_COLS)
     out_to_save = out.reset_index().rename(columns={"index": date_col})[[date_col] + TARGET_COLS].copy()
-
+    
     # calibration (optional)
     calib = {}
     history_dir = _history_dir_for_h(int(h_next))
     hist_files = list(history_dir.glob("forecast_until_*.csv")) if history_dir.exists() else []
+
     if hist_files and (actual_full is not None):
         try:
             calib = fit_calibration_from_history(
@@ -514,7 +533,13 @@ def run_forecast(
 
     saved_ok = False
     if bool(save_history):
-        fname_hist = save_forecast_history(out_to_save, last_date, int(h_next), date_col, run_seed_base=run_seed_base)
+        fname_hist = save_forecast_history(
+            out_to_save,
+            last_date,
+            int(h_next),
+            date_col,
+            run_seed_base=run_seed_base,
+        )
         st.caption(f"Đã lưu forecast_history: {fname_hist.name}")
         saved_ok = True
 
