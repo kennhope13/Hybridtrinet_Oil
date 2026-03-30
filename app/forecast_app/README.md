@@ -1,53 +1,35 @@
-# Chức năng các file trong thư mục `forecast_app`
+# 📁 forecast_app
 
-### `app.py`
-File chạy chính của ứng dụng Streamlit.  
-Dùng để tạo giao diện, nhận dữ liệu người dùng, gọi các hàm xử lý dữ liệu, huấn luyện, dự báo và hiển thị kết quả.
+Thư mục `forecast_app` chứa các module cốt lõi phục vụ ứng dụng dự báo giá xăng dầu.  
+Các file trong thư mục này được tách riêng theo từng chức năng để thuận tiện cho việc phát triển, bảo trì và mở rộng hệ thống.
 
-### `core.py`
-File điều phối pipeline chính của hệ thống.  
-Kết nối các bước từ xử lý dữ liệu, huấn luyện mô hình, dự báo, hiệu chỉnh đến đánh giá kết quả.
+---
 
-### `config.py`
-File cấu hình chung của ứng dụng.  
-Chứa các tham số mặc định như danh sách target dự báo, số bước nhìn lại, số bước dự báo và các thiết lập khác.
+## ✨ Chức năng của từng file
 
-### `style.py`
-File quản lý phần hiển thị giao diện.  
-Dùng để chèn CSS và tùy chỉnh giao diện Streamlit cho đồng bộ và dễ nhìn hơn.
+| File | Chức năng |
+|------|-----------|
+| `app/app_forecast.py` | File chạy chính của ứng dụng Streamlit. Phụ trách dựng giao diện, nhận dữ liệu đầu vào từ người dùng, gọi pipeline xử lý và hiển thị kết quả dự báo. |
+| `forecast_app/__init__.py` | File khởi tạo package `forecast_app`, cho phép các module trong thư mục import lẫn nhau theo cấu trúc package Python. |
+| `forecast_app/config.py` | Chứa các cấu hình dùng chung cho toàn bộ ứng dụng như danh sách biến mục tiêu, số bước nhìn lại, số bước dự báo và các tham số mặc định khác. |
+| `forecast_app/style.py` | Quản lý phần giao diện hiển thị, dùng để chèn CSS và tùy chỉnh phong cách trình bày của ứng dụng Streamlit. |
+| `forecast_app/ui.py` | Chứa các thành phần giao diện dùng lại như tiêu đề trang, tiêu đề mục, đường phân cách và các khối hiển thị chuẩn hóa. |
+| `forecast_app/data_helpers.py` | Hỗ trợ đọc và tiền xử lý dữ liệu đầu vào, bao gồm đọc file actual và file upload, chuẩn hóa cột ngày, xử lý giá trị thiếu, nội suy và gộp dữ liệu. |
+| `forecast_app/plots.py` | Chứa các hàm vẽ biểu đồ, phục vụ trực quan hóa dữ liệu thực tế và dữ liệu dự báo để hỗ trợ so sánh và phân tích kết quả. |
+| `forecast_app/train_focus5.py` | Phụ trách huấn luyện mô hình dự báo, với định hướng tối ưu tốt hơn cho các bước dự báo ngắn hạn, đặc biệt là 5 ngày đầu. |
+| `forecast_app/autoregressive.py` | Triển khai cơ chế dự báo tự hồi quy nhiều bước, sử dụng kết quả dự báo trước đó làm đầu vào cho các bước tiếp theo. |
+| `forecast_app/calibration.py` | Thực hiện hiệu chỉnh kết quả dự báo nhằm giảm sai lệch giữa forecast và actual dựa trên dữ liệu lịch sử. |
+| `forecast_app/metrics.py` | Tính toán các chỉ số đánh giá mô hình như MAE, MAPE, MSE, RMSE, R² và các thống kê liên quan khác. |
+| `forecast_app/history_eval.py` | Đánh giá lịch sử dự báo bằng cách đọc các file forecast trước đó, so sánh với actual hiện tại và tính metrics trên vùng dữ liệu trùng nhau. |
+| `forecast_app/core.py` | Điều phối pipeline chính của hệ thống, kết nối các bước xử lý dữ liệu, huấn luyện, dự báo, hiệu chỉnh và đánh giá kết quả. |
 
-### `ui.py`
-File chứa các thành phần giao diện dùng lại.  
-Ví dụ như tiêu đề trang, tiêu đề mục, đường phân cách hoặc các khối hiển thị chuẩn.
+---
 
-### `data_helpers.py`
-File hỗ trợ đọc và xử lý dữ liệu đầu vào.  
-Dùng để đọc file actual/upload, chuẩn hóa cột ngày, xử lý thiếu dữ liệu, nội suy và gộp dữ liệu mới với dữ liệu cũ.
+## 🧩 Tóm tắt
 
-### `plots.py`
-File phục vụ vẽ biểu đồ.  
-Dùng để trực quan hóa dữ liệu thực tế và dữ báo, hỗ trợ so sánh xu hướng giữa actual và forecast.
+Nhìn tổng thể, thư mục `forecast_app` được chia thành 4 nhóm chức năng chính:
 
-### `train_focus5.py`
-File huấn luyện mô hình dự báo.  
-Tập trung tối ưu chất lượng dự báo, đặc biệt cho các ngày đầu của horizon.
-
-### `autoregressive.py`
-File thực hiện dự báo tự hồi quy nhiều bước.  
-Dùng output của bước trước làm input cho bước sau để mở rộng dự báo cho horizon dài hơn.
-
-### `calibration.py`
-File hiệu chỉnh kết quả dự báo.  
-Dùng để giảm độ lệch giữa forecast và actual bằng cách áp dụng các hệ số calibration học từ lịch sử.
-
-### `metrics.py`
-File tính các chỉ số đánh giá mô hình.  
-Bao gồm MAE, MAPE, MSE, RMSE, R² và các chỉ số liên quan khác.
-
-### `history_eval.py`
-File đánh giá lịch sử dự báo.  
-Dùng để đọc các file forecast cũ, so sánh với actual hiện tại và tính metrics trên vùng dữ liệu trùng nhau.
-
-### `__init__.py`
-File đánh dấu thư mục là một Python package.  
-Giúp các module trong thư mục có thể import lẫn nhau theo cấu trúc package.
+- **Giao diện:** `app_forecast.py`, `style.py`, `ui.py`
+- **Cấu hình và dữ liệu:** `config.py`, `data_helpers.py`
+- **Huấn luyện và dự báo:** `train_focus5.py`, `autoregressive.py`, `calibration.py`, `core.py`
+- **Đánh giá và trực quan hóa:** `metrics.py`, `history_eval.py`, `plots.py`
