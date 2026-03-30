@@ -9,7 +9,7 @@ Các file trong thư mục này được tách riêng theo từng chức năng �
 
 | File | Chức năng |
 |------|-----------|
-| `app/app_forecast.py` | File chạy chính của ứng dụng Streamlit. Phụ trách dựng giao diện, nhận dữ liệu đầu vào từ người dùng, gọi pipeline xử lý và hiển thị kết quả dự báo. |
+| `app/app.py` | File chạy chính của ứng dụng Streamlit. Phụ trách dựng giao diện, nhận dữ liệu đầu vào từ người dùng, gọi pipeline xử lý và hiển thị kết quả dự báo. |
 | `forecast_app/__init__.py` | File khởi tạo package `forecast_app`, cho phép các module trong thư mục import lẫn nhau theo cấu trúc package Python. |
 | `forecast_app/config.py` | Chứa các cấu hình dùng chung cho toàn bộ ứng dụng như danh sách biến mục tiêu, số bước nhìn lại, số bước dự báo và các tham số mặc định khác. |
 | `forecast_app/style.py` | Quản lý phần giao diện hiển thị, dùng để chèn CSS và tùy chỉnh phong cách trình bày của ứng dụng Streamlit. |
