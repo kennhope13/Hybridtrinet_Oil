@@ -1,439 +1,297 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-import copy
-import random
-
+# forecast_app/train_focus5.py
 import numpy as np
-import pandas as pd
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+import torch.nn.functional as F
 
 
-# =========================================================
-# Helpers
-# =========================================================
-
-def set_seed(seed: int = 42) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def _horizon_weights_torch(Hh: int, focus_h: int = 5, focus_w: float = 3.0, device=None, dtype=torch.float32):
+    Hh = int(Hh)
+    focus_h = int(min(max(1, focus_h), Hh))
+    w = torch.ones(Hh, device=device, dtype=dtype)
+    w[:focus_h] = float(focus_w)
+    w = w / (w.mean() + 1e-12)
+    return w.view(1, Hh, 1)
 
 
-def infer_date_col(df: pd.DataFrame) -> Optional[str]:
-    candidates = ["Ngày", "ngay", "date", "Date", "DATE", "timestamp", "Timestamp"]
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
+# -------------------------
+# Legacy (giữ tương thích)
+# -------------------------
+def loss_focus5(out, y, loss_name="huber", focus_h=5, focus_w=3.0, huber_beta=1.0):
+    if out.ndim != 3 or y.ndim != 3:
+        raise ValueError(f"Expect out,y [B,H,D], got out={tuple(out.shape)} y={tuple(y.shape)}")
+    w = _horizon_weights_torch(out.size(1), focus_h, focus_w, device=out.device, dtype=out.dtype)
+
+    ln = str(loss_name).lower()
+    if ln == "mae":
+        base = (out - y).abs()
+    elif ln == "mse":
+        base = (out - y).pow(2)
+    elif ln == "huber":
+        base = F.smooth_l1_loss(out, y, beta=float(huber_beta), reduction="none")
+    else:
+        raise ValueError("loss_name must be one of: mae | mse | huber")
+    return (w * base).mean()
 
 
-def infer_feature_cols(
-    df: pd.DataFrame,
-    target_cols: List[str],
-    date_col: Optional[str] = None,
-) -> List[str]:
-    if date_col is None:
-        date_col = infer_date_col(df)
+def _batch_xy(batch):
+    if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+        return batch[0], batch[1]
+    if isinstance(batch, dict) and ("x" in batch) and ("y" in batch):
+        return batch["x"], batch["y"]
+    raise ValueError("Batch format not supported. Expect (x,y) or {'x','y'}")
 
-    exclude = set(target_cols)
-    if date_col is not None:
-        exclude.add(date_col)
 
-    num_cols = []
-    for c in df.columns:
-        if c in exclude:
-            continue
-        if pd.api.types.is_numeric_dtype(df[c]):
-            num_cols.append(c)
-
-    # luôn đưa target vào feature nếu chưa có
-    out = []
-    for c in target_cols:
-        if c in df.columns and c not in out:
-            out.append(c)
-    for c in num_cols:
-        if c not in out:
-            out.append(c)
-
+def _match_out_to_y(out, y):
+    if isinstance(out, (tuple, list)):
+        out = out[0]
+    if out.ndim == 3:
+        if y.ndim == 3 and out.shape[1] == y.shape[2] and out.shape[2] == y.shape[1]:
+            return out.transpose(1, 2)
+        return out
+    if out.ndim == 2 and y.ndim == 3:
+        B, HH, DD = y.shape
+        if out.shape[1] == HH * DD:
+            return out.view(B, HH, DD)
     return out
 
 
-def normalize_df(
-    df: pd.DataFrame,
-    feature_cols: List[str],
-    mean_: Optional[pd.Series] = None,
-    std_: Optional[pd.Series] = None,
-) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
-    x = df[feature_cols].copy()
-
-    if mean_ is None:
-        mean_ = x.mean(axis=0)
-
-    if std_ is None:
-        std_ = x.std(axis=0).replace(0, 1.0).fillna(1.0)
-
-    x_std = (x - mean_) / std_
-    x_std = x_std.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    return x_std, mean_, std_
+def _to_torch_vec(x, device, dtype=torch.float32):
+    x = np.asarray(x, dtype=np.float32).reshape(-1)
+    return torch.tensor(x, device=device, dtype=dtype)
 
 
-def split_train_val(
-    df: pd.DataFrame,
-    val_ratio: float = 0.1,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    n = len(df)
-    if n < 20:
-        return df.copy(), df.copy()
-
-    n_val = max(1, int(round(n * val_ratio)))
-    n_val = min(n_val, max(1, n - 1))
-
-    train_df = df.iloc[:-n_val].copy()
-    val_df = df.iloc[-n_val:].copy()
-    return train_df, val_df
+def _last_price_from_x_std(x_std, tgt_idx, x_mu_tgt, x_sd_tgt):
+    tgt_idx = list(map(int, tgt_idx))
+    last_std = x_std[:, -1, tgt_idx]               # [B,D]
+    last_raw = last_std * x_sd_tgt.view(1, -1) + x_mu_tgt.view(1, -1)
+    return last_raw.unsqueeze(1)                   # [B,1,D]
 
 
-def build_xy_from_std(
-    df_std: pd.DataFrame,
-    feature_cols: List[str],
-    target_cols: List[str],
-    k: int,
-    h: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    arr = df_std[feature_cols].to_numpy(dtype=np.float32)
-    tgt_idx = [feature_cols.index(c) for c in target_cols]
+def loss_delta_price_focus(
+    out_std, y_std, x_std,
+    *,
+    tgt_idx, x_mu, x_sd, y_mu, y_sd,
+    focus_h=5, focus_w=3.0,
+    delta_loss="huber", huber_beta=1.0,
+    alpha_delta=0.20, beta_price=1.00,
+    eps_mape=1e-3,
+):
+    if out_std.ndim != 3 or y_std.ndim != 3:
+        raise ValueError(f"Expect out,y [B,H,D], got out={tuple(out_std.shape)} y={tuple(y_std.shape)}")
 
-    xs = []
-    ys = []
+    w_h = _horizon_weights_torch(out_std.size(1), focus_h, focus_w, device=out_std.device, dtype=out_std.dtype)
 
-    n = len(arr)
-    for end_ix in range(k, n - h + 1):
-        x = arr[end_ix - k:end_ix, :]                      # [K, D]
-        y = arr[end_ix:end_ix + h, :][:, tgt_idx]         # [H, T]
-        xs.append(x)
-        ys.append(y)
-
-    if not xs:
-        return (
-            np.zeros((0, k, len(feature_cols)), dtype=np.float32),
-            np.zeros((0, h, len(target_cols)), dtype=np.float32),
-        )
-
-    return np.stack(xs), np.stack(ys)
-
-
-class WindowDataset(Dataset):
-    def __init__(self, x: np.ndarray, y: np.ndarray):
-        self.x = torch.tensor(x, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32)
-
-    def __len__(self) -> int:
-        return len(self.x)
-
-    def __getitem__(self, idx: int):
-        return self.x[idx], self.y[idx]
-
-
-def _reshape_model_out(
-    out: torch.Tensor,
-    batch_size: int,
-    h: int,
-    t: int,
-) -> torch.Tensor:
-    """
-    Chuẩn hóa output model về [B, H, T].
-    Hỗ trợ:
-      - [B, H, T]
-      - [B, H*T]
-      - [B, T] -> [B, 1, T] rồi repeat nếu H=1
-    """
-    if isinstance(out, (tuple, list)):
-        out = out[0]
-
-    if out.ndim == 3:
-        return out
-
-    if out.ndim == 2:
-        if out.shape[1] == h * t:
-            return out.view(batch_size, h, t)
-        if out.shape[1] == t and h == 1:
-            return out.unsqueeze(1)
-
-    raise ValueError(
-        f"Model output shape không hỗ trợ: {tuple(out.shape)}. "
-        f"Kỳ vọng [B,H,T] hoặc [B,H*T]."
-    )
-
-
-def weighted_focus_loss(
-    pred: torch.Tensor,
-    true: torch.Tensor,
-    h: int,
-    focus_weight: float = 2.0,
-    focus_n: int = 5,
-    loss_name: str = "smooth_l1",
-) -> torch.Tensor:
-    """
-    pred, true: [B, H, T]
-    """
-    if loss_name == "mse":
-        base = (pred - true) ** 2
+    ln = str(delta_loss).lower()
+    if ln == "mae":
+        base = (out_std - y_std).abs()
+    elif ln == "mse":
+        base = (out_std - y_std).pow(2)
+    elif ln == "huber":
+        base = F.smooth_l1_loss(out_std, y_std, beta=float(huber_beta), reduction="none")
     else:
-        base = torch.nn.functional.smooth_l1_loss(pred, true, reduction="none")
+        raise ValueError("delta_loss must be one of: huber | mae | mse")
 
-    w = torch.ones(h, device=pred.device, dtype=pred.dtype)
-    w[: min(focus_n, h)] = float(focus_weight)
-    w = w.view(1, h, 1)
+    loss_d = (w_h * base).mean()
 
-    return (base * w).mean()
+    y_mu_t = _to_torch_vec(y_mu, out_std.device, out_std.dtype).view(1, 1, -1)
+    y_sd_t = _to_torch_vec(y_sd, out_std.device, out_std.dtype).view(1, 1, -1)
+    pred_d = out_std * y_sd_t + y_mu_t
+    true_d = y_std   * y_sd_t + y_mu_t
+
+    x_mu_tgt = _to_torch_vec(x_mu, out_std.device, out_std.dtype)[list(map(int, tgt_idx))]
+    x_sd_tgt = _to_torch_vec(x_sd, out_std.device, out_std.dtype)[list(map(int, tgt_idx))]
+    last_price = _last_price_from_x_std(x_std, tgt_idx, x_mu_tgt, x_sd_tgt)  # [B,1,D]
+
+    pred_p = last_price + torch.cumsum(pred_d, dim=1)
+    true_p = last_price + torch.cumsum(true_d, dim=1)
+
+    mape = (pred_p - true_p).abs() / (true_p.abs() + float(eps_mape))
+    loss_p = (w_h * mape).mean()
+
+    return float(alpha_delta) * loss_d + float(beta_price) * loss_p
 
 
-@dataclass
-class FineTuneResult:
-    model: nn.Module
-    feature_cols: List[str]
-    target_cols: List[str]
-    mean_: pd.Series
-    std_: pd.Series
-    best_val_loss: float
-    history: List[Dict[str, float]]
+@torch.no_grad()
+def val_mae_price_focus(model, va_loader, *, tgt_idx, x_mu, x_sd, y_mu, y_sd, device, focus_h=5, focus_w=3.0):
+    model.eval()
+    x_mu = np.asarray(x_mu, dtype=np.float32).reshape(-1)
+    x_sd = np.asarray(x_sd, dtype=np.float32).reshape(-1)
+    y_mu = np.asarray(y_mu, dtype=np.float32).reshape(-1)
+    y_sd = np.asarray(y_sd, dtype=np.float32).reshape(-1)
+
+    all_sum = 0.0
+    all_wsum = 0.0
+
+    for batch in va_loader:
+        x, y = _batch_xy(batch)
+        x = x.to(device=device, dtype=torch.float32)
+        y = y.to(device=device, dtype=torch.float32)
+
+        out = model(x)
+        out = _match_out_to_y(out, y)
+        if out.ndim != 3:
+            raise ValueError(f"Model output must be [B,H,D], got {tuple(out.shape)}")
+
+        B, Hh, Dd = out.shape
+        w_h = _horizon_weights_torch(Hh, focus_h, focus_w, device=device, dtype=out.dtype)
+
+        y_mu_t = _to_torch_vec(y_mu[:Dd], device, out.dtype).view(1, 1, Dd)
+        y_sd_t = _to_torch_vec(y_sd[:Dd], device, out.dtype).view(1, 1, Dd)
+        pred_d = out * y_sd_t + y_mu_t
+        true_d = y   * y_sd_t + y_mu_t
+
+        x_mu_tgt = _to_torch_vec(x_mu, device, out.dtype)[list(map(int, tgt_idx))]
+        x_sd_tgt = _to_torch_vec(x_sd, device, out.dtype)[list(map(int, tgt_idx))]
+        last_price = _last_price_from_x_std(x, tgt_idx, x_mu_tgt, x_sd_tgt)
+
+        pred_p = last_price + torch.cumsum(pred_d, dim=1)
+        true_p = last_price + torch.cumsum(true_d, dim=1)
+
+        err = (pred_p - true_p).abs()
+
+        all_sum += float((w_h * err).sum().item())
+        all_wsum += float((w_h * torch.ones_like(err)).sum().item())
+
+    return all_sum / max(1e-12, all_wsum)
 
 
-# =========================================================
-# Fine-tune main
-# =========================================================
-
-def fine_tune_model(
-    model: nn.Module,
-    df: pd.DataFrame,
-    target_cols: List[str],
-    feature_cols: Optional[List[str]] = None,
-    date_col: Optional[str] = None,
-    k: int = 128,
-    h: int = 5,
-    val_ratio: float = 0.1,
-    epochs: int = 5,
-    batch_size: int = 64,
-    lr: float = 1e-5,
-    weight_decay: float = 1e-4,
-    focus_weight: float = 2.0,
-    focus_n: int = 5,
-    loss_name: str = "smooth_l1",
-    shuffle: bool = True,
-    seed: Optional[int] = None,
-    device: Optional[str] = None,
-) -> FineTuneResult:
-    """
-    Fine-tune model hiện tại trên dữ liệu mới nhất.
-
-    Ý tưởng:
-    - Chuẩn hóa feature theo train split
-    - Build window [K -> H]
-    - Fine-tune vài epoch
-    - Trả về model + scaler để forecast tiếp
-    """
-    if seed is not None:
-        set_seed(seed)
-
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
+def fit_model_better(
+    model,
+    tr_loader,
+    va_loader,
+    mu,
+    sd,
+    epochs: int,
+    lr: float,
+    loss_name: str = "huber",
+    weight_decay: float = 0.0,
+    grad_clip: float = 1.0,
+    patience: int = 25,
+    use_amp: bool = True,
+    status_cb=None,
+    device: str = "cpu",
+    focus_h: int = 5,
+    focus_w: float = 3.0,
+    # NEW
+    use_delta_price_loss: bool = False,
+    tgt_idx=None,
+    x_mu=None,
+    x_sd=None,
+    y_mu=None,
+    y_sd=None,
+    alpha_delta: float = 0.20,
+    beta_price: float = 1.00,
+    eps_mape: float = 1e-3,
+):
     model = model.to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
 
-    df = df.copy()
-    if date_col is None:
-        date_col = infer_date_col(df)
+    total_steps = max(1, int(epochs) * max(1, len(tr_loader)))
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=float(lr), total_steps=total_steps, pct_start=0.15)
 
-    if date_col is not None and date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.sort_values(date_col).reset_index(drop=True)
+    scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and device == "cuda"))
 
-    # chỉ giữ các cột cần thiết và drop dòng lỗi target
-    existing_targets = [c for c in target_cols if c in df.columns]
-    if len(existing_targets) != len(target_cols):
-        missing = [c for c in target_cols if c not in df.columns]
-        raise ValueError(f"Thiếu target_cols trong df: {missing}")
-
-    df = df.dropna(subset=target_cols).reset_index(drop=True)
-
-    if feature_cols is None:
-        feature_cols = infer_feature_cols(df, target_cols=target_cols, date_col=date_col)
-
-    missing_feat = [c for c in feature_cols if c not in df.columns]
-    if missing_feat:
-        raise ValueError(f"Thiếu feature_cols trong df: {missing_feat}")
-
-    # đủ dữ liệu mới build được window
-    if len(df) < (k + h + 5):
-        raise ValueError(
-            f"Không đủ dữ liệu để fine-tune. "
-            f"Cần ít nhất khoảng {k + h + 5} dòng, hiện có {len(df)} dòng."
-        )
-
-    train_df, val_df = split_train_val(df, val_ratio=val_ratio)
-
-    train_std, mean_, std_ = normalize_df(train_df, feature_cols=feature_cols)
-    val_std, _, _ = normalize_df(val_df, feature_cols=feature_cols, mean_=mean_, std_=std_)
-
-    x_train, y_train = build_xy_from_std(
-        df_std=train_std,
-        feature_cols=feature_cols,
-        target_cols=target_cols,
-        k=k,
-        h=h,
-    )
-    x_val, y_val = build_xy_from_std(
-        df_std=val_std,
-        feature_cols=feature_cols,
-        target_cols=target_cols,
-        k=k,
-        h=h,
-    )
-
-    if len(x_train) == 0:
-        raise ValueError("Không tạo được sample train để fine-tune.")
-    if len(x_val) == 0:
-        # nếu val quá ngắn, dùng train cuối làm val fallback
-        x_val = x_train[-min(len(x_train), 32):]
-        y_val = y_train[-min(len(y_train), 32):]
-
-    ds_train = WindowDataset(x_train, y_train)
-    ds_val = WindowDataset(x_val, y_val)
-
-    dl_train = DataLoader(
-        ds_train,
-        batch_size=min(batch_size, len(ds_train)),
-        shuffle=shuffle,
-        drop_last=False,
-    )
-    dl_val = DataLoader(
-        ds_val,
-        batch_size=min(batch_size, len(ds_val)),
-        shuffle=False,
-        drop_last=False,
-    )
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    best_state = copy.deepcopy(model.state_dict())
     best_val = float("inf")
-    history: List[Dict[str, float]] = []
+    best_state = None
+    bad = 0
 
-    t = len(target_cols)
-
-    for ep in range(1, epochs + 1):
+    for ep in range(1, int(epochs) + 1):
         model.train()
-        train_losses = []
+        tr_losses = []
 
-        for xb, yb in dl_train:
-            xb = xb.to(device)
-            yb = yb.to(device)
+        for batch in tr_loader:
+            x, y = _batch_xy(batch)
+            x = x.to(device=device, dtype=torch.float32)
+            y = y.to(device=device, dtype=torch.float32)
 
-            optimizer.zero_grad(set_to_none=True)
-            out = model(xb)
-            out = _reshape_model_out(out, batch_size=xb.size(0), h=h, t=t)
+            opt.zero_grad(set_to_none=True)
 
-            # nếu model trả D lớn hơn T thì cắt T cột đầu
-            if out.shape[-1] > t:
-                out = out[..., :t]
+            with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
+                out = model(x)
+                out = _match_out_to_y(out, y)
 
-            loss = weighted_focus_loss(
-                pred=out,
-                true=yb,
-                h=h,
-                focus_weight=focus_weight,
-                focus_n=focus_n,
-                loss_name=loss_name,
+                if use_delta_price_loss:
+                    loss = loss_delta_price_focus(
+                        out, y, x,
+                        tgt_idx=tgt_idx, x_mu=x_mu, x_sd=x_sd, y_mu=y_mu, y_sd=y_sd,
+                        focus_h=focus_h, focus_w=focus_w,
+                        delta_loss=loss_name, huber_beta=1.0,
+                        alpha_delta=alpha_delta, beta_price=beta_price,
+                        eps_mape=eps_mape,
+                    )
+                else:
+                    loss = loss_focus5(out, y, loss_name=loss_name, focus_h=focus_h, focus_w=focus_w, huber_beta=1.0)
+
+            scaler.scale(loss).backward()
+
+            if grad_clip and float(grad_clip) > 0:
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
+
+            scaler.step(opt)
+            scaler.update()
+            sched.step()
+
+            tr_losses.append(float(loss.detach().cpu().item()))
+
+        if use_delta_price_loss:
+            val_mae = val_mae_price_focus(
+                model, va_loader,
+                tgt_idx=tgt_idx, x_mu=x_mu, x_sd=x_sd, y_mu=y_mu, y_sd=y_sd,
+                device=device, focus_h=focus_h, focus_w=focus_w
             )
-            loss.backward()
-            optimizer.step()
+        else:
+            val_mae = val_mae_real_focus5(model, va_loader, mu=mu, sd=sd, device=device, focus_h=focus_h, focus_w=focus_w)
 
-            train_losses.append(float(loss.item()))
+        tr_loss = float(np.mean(tr_losses)) if tr_losses else float("nan")
+        lr_now = float(opt.param_groups[0]["lr"])
+        if status_cb is not None:
+            status_cb(ep, int(epochs), tr_loss, val_mae, lr_now)
 
-        model.eval()
-        val_losses = []
+        if val_mae < best_val - 1e-7:
+            best_val = val_mae
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= int(patience):
+                break
 
-        with torch.no_grad():
-            for xb, yb in dl_val:
-                xb = xb.to(device)
-                yb = yb.to(device)
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
-                out = model(xb)
-                out = _reshape_model_out(out, batch_size=xb.size(0), h=h, t=t)
-
-                if out.shape[-1] > t:
-                    out = out[..., :t]
-
-                loss = weighted_focus_loss(
-                    pred=out,
-                    true=yb,
-                    h=h,
-                    focus_weight=focus_weight,
-                    focus_n=focus_n,
-                    loss_name=loss_name,
-                )
-                val_losses.append(float(loss.item()))
-
-        train_loss = float(np.mean(train_losses)) if train_losses else np.nan
-        val_loss = float(np.mean(val_losses)) if val_losses else np.nan
-
-        history.append(
-            {
-                "epoch": ep,
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-            }
-        )
-
-        if np.isfinite(val_loss) and val_loss < best_val:
-            best_val = val_loss
-            best_state = copy.deepcopy(model.state_dict())
-
-    model.load_state_dict(best_state)
-
-    return FineTuneResult(
-        model=model,
-        feature_cols=feature_cols,
-        target_cols=target_cols,
-        mean_=mean_,
-        std_=std_,
-        best_val_loss=best_val,
-        history=history,
-    )
+    return model, best_val
 
 
-# =========================================================
-# Checkpoint helpers
-# =========================================================
+@torch.no_grad()
+def val_mae_real_focus5(model, va_loader, mu, sd, device, focus_h: int = 5, focus_w: float = 3.0):
+    model.eval()
+    mu = np.asarray(mu, dtype=np.float32).reshape(-1)
+    sd = np.asarray(sd, dtype=np.float32).reshape(-1)
 
-def save_finetuned_bundle(
-    save_path: str,
-    model: nn.Module,
-    feature_cols: List[str],
-    target_cols: List[str],
-    mean_: pd.Series,
-    std_: pd.Series,
-    extra: Optional[Dict] = None,
-) -> None:
-    bundle = {
-        "model_state_dict": model.state_dict(),
-        "feature_cols": list(feature_cols),
-        "target_cols": list(target_cols),
-        "mean": mean_.to_dict(),
-        "std": std_.to_dict(),
-        "extra": extra or {},
-    }
-    torch.save(bundle, save_path)
+    all_sum = 0.0
+    all_wsum = 0.0
 
+    for batch in va_loader:
+        x, y = _batch_xy(batch)
+        x = x.to(device=device, dtype=torch.float32)
+        y = y.to(device=device, dtype=torch.float32)
 
-def load_bundle_meta(ckpt_path: str) -> Dict:
-    obj = torch.load(ckpt_path, map_location="cpu")
-    if not isinstance(obj, dict):
-        raise ValueError("Checkpoint không đúng định dạng dict.")
-    return obj
+        out = model(x)
+        out = _match_out_to_y(out, y)
+        if out.ndim != 3:
+            raise ValueError(f"Model output must be [B,H,D], got {tuple(out.shape)}")
+
+        B, Hh, Dd = out.shape
+        mu_t = torch.tensor(mu[:Dd], device=device, dtype=torch.float32).view(1, 1, Dd)
+        sd_t = torch.tensor(sd[:Dd], device=device, dtype=torch.float32).view(1, 1, Dd)
+        pr = out * sd_t + mu_t
+        gt = y * sd_t + mu_t
+
+        err = (pr - gt).abs()
+        w_h = _horizon_weights_torch(Hh, focus_h, focus_w, device=device, dtype=err.dtype)
+
+        all_sum += float((w_h * err).sum().item())
+        all_wsum += float((w_h * torch.ones_like(err)).sum().item())
+
+    return all_sum / max(1e-12, all_wsum)

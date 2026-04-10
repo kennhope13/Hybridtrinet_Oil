@@ -1,11 +1,12 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
-
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
 import torch
+from torch.utils.data import DataLoader
 from pandas.tseries.offsets import BDay
 import altair as alt
 
@@ -22,11 +23,7 @@ from .data_helpers import (
     merge_keep_nonnull,
 )
 from .plots import plot_candlestick_preview
-from .train_focus5 import (
-    fine_tune_model,
-    save_finetuned_bundle,
-    load_bundle_meta,
-)
+from .train_focus5 import fit_model_better
 from .autoregressive import roll_autoregressive_safe, ensure_F_shape
 from .calibration import fit_calibration_from_history, apply_calibration
 from .history_eval import load_actual_root, compute_metrics
@@ -34,7 +31,7 @@ from .history_eval import load_actual_root, compute_metrics
 from src.dataio import build_merged, _ensure_date, _align_union_columns
 from src.features import _coerce_targets_numeric
 from src.model.hybrid_trinet import HybridTriNet
-from src.model.training import set_seed
+from src.model.training import set_seed, standardize, build_windows, WindowDS
 from src.utils.paths import RUN_OUTPUT_DIR
 
 
@@ -42,14 +39,19 @@ START0 = pd.Timestamp("2025-09-19").normalize()
 
 
 def _ts_seed_base() -> int:
-    return 20260320
+    s = int(datetime.now().strftime("%Y%m%d%H%M%S%f"))
+    return int(s % 2_147_483_647)
 
 
 def _history_dir_for_h(h: int) -> Path:
     base_dir = RUN_OUTPUT_DIR / "forecast_history"
     base_dir.mkdir(parents=True, exist_ok=True)
+
     h = int(h)
-    return (base_dir / str(h)) if h in (30, 60, 100) else base_dir
+    h_dir = base_dir / str(h)
+    h_dir.mkdir(parents=True, exist_ok=True)
+
+    return h_dir
 
 
 # ============================================================
@@ -105,6 +107,7 @@ def _read_history_wide_file_to_long(
         long_df["run_seed_base"] = np.nan
 
     long_df["yhat"] = pd.to_numeric(long_df["yhat"], errors="coerce")
+
     long_df = long_df.dropna(subset=["date", "target"]).reset_index(drop=True)
     return long_df
 
@@ -126,6 +129,7 @@ def _load_history_long_from_dir(hist_dir: Path, targets: List[str], date_col_hin
 
     out = pd.concat(parts, ignore_index=True)
 
+    # sort key for "latest_asof"
     out["_asof_sort"] = out["train_last_date"].copy()
     out["_asof_sort"] = out["_asof_sort"].where(out["_asof_sort"].notna(), out["generated_at"])
     out["_asof_sort"] = out["_asof_sort"].fillna(pd.Timestamp("1900-01-01"))
@@ -145,16 +149,14 @@ def latest_asof_per_date_target(hist_long: pd.DataFrame) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True).dt.normalize()
     df = df.dropna(subset=["date", "target"]).copy()
 
+    # lọc hợp lệ: date phải > train_last_date nếu có
     if "train_last_date" in df.columns:
         tld = pd.to_datetime(df["train_last_date"], errors="coerce", dayfirst=True).dt.normalize()
         df = df[df["date"] > tld].copy()
 
     if "_asof_sort" not in df.columns:
         df["_asof_sort"] = pd.to_datetime(df.get("train_last_date"), errors="coerce", dayfirst=True).dt.normalize()
-        df["_asof_sort"] = df["_asof_sort"].where(
-            df["_asof_sort"].notna(),
-            pd.to_datetime(df.get("generated_at"), errors="coerce", dayfirst=True),
-        )
+        df["_asof_sort"] = df["_asof_sort"].where(df["_asof_sort"].notna(), pd.to_datetime(df.get("generated_at"), errors="coerce", dayfirst=True))
         df["_asof_sort"] = df["_asof_sort"].fillna(pd.Timestamp("1900-01-01"))
 
     df = (
@@ -177,134 +179,6 @@ def _count_history_files(hist_dir: Path) -> int:
     if hist_dir is None or (not hist_dir.exists()):
         return 0
     return len(list(hist_dir.glob("forecast_until_*.csv")))
-
-
-def _filter_valid_forecast(hist_long: pd.DataFrame) -> pd.DataFrame:
-    """
-    Lọc các dòng forecast hợp lệ:
-    - date không null, target không null
-    - yhat numeric
-    - nếu có train_last_date: chỉ giữ date > train_last_date
-    """
-    if hist_long is None or hist_long.empty:
-        return pd.DataFrame(columns=["date", "target", "yhat", "train_last_date", "generated_at", "run_seed_base", "source_file"])
-
-    df = hist_long.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True).dt.normalize()
-    df = df.dropna(subset=["date", "target"]).copy()
-    df["yhat"] = pd.to_numeric(df["yhat"], errors="coerce")
-    df = df.dropna(subset=["yhat"]).copy()
-
-    if "train_last_date" in df.columns:
-        tld = pd.to_datetime(df["train_last_date"], errors="coerce", dayfirst=True).dt.normalize()
-        df = df[(tld.isna()) | (df["date"] > tld)].copy()
-
-    return df.reset_index(drop=True)
-
-
-def _agg_mean_by_date_target(hist_long: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gộp forecast trùng (date,target) bằng trung bình yhat.
-    Giữ thêm n_forecasts + train_last_date_max + generated_at_max để xem.
-    """
-    if hist_long is None or hist_long.empty:
-        return pd.DataFrame(columns=["date", "target", "yhat", "n_forecasts", "train_last_date", "generated_at"])
-
-    df = _filter_valid_forecast(hist_long)
-    if df.empty:
-        return pd.DataFrame(columns=["date", "target", "yhat", "n_forecasts", "train_last_date", "generated_at"])
-
-    if "train_last_date" in df.columns:
-        df["train_last_date"] = pd.to_datetime(df["train_last_date"], errors="coerce", dayfirst=True).dt.normalize()
-    else:
-        df["train_last_date"] = pd.NaT
-
-    if "generated_at" in df.columns:
-        df["generated_at"] = pd.to_datetime(df["generated_at"], errors="coerce", dayfirst=True)
-    else:
-        df["generated_at"] = pd.NaT
-
-    g = (
-        df.groupby(["date", "target"], as_index=False)
-          .agg(
-              yhat=("yhat", "mean"),
-              n_forecasts=("yhat", "size"),
-              train_last_date=("train_last_date", "max"),
-              generated_at=("generated_at", "max"),
-          )
-    )
-    return g
-
-
-# ============================================================
-# Helpers for fine-tune forecast
-# ============================================================
-def _build_model(D: int, device: str) -> HybridTriNet:
-    return HybridTriNet(
-        k=K,
-        D=D,
-        H=H,
-        d_feat=96,
-        kan_M=8,
-        kan_depth=2,
-        kan_drop=0.10,
-        gru_hidden=128,
-        gru_layers=1,
-        gru_drop=0.10,
-        attn_dmodel=48,
-        attn_heads=3,
-        attn_layers=2,
-        attn_drop=0.05,
-        patch_len=16,
-        stride=8,
-    ).to(device)
-
-
-def _load_ckpt_flexible(model: torch.nn.Module, ckpt_path: Path, device: str) -> bool:
-    """
-    Hỗ trợ cả:
-    - checkpoint cũ: torch.save(model.state_dict(), ...)
-    - checkpoint mới: save_finetuned_bundle(...)
-    """
-    if not ckpt_path.exists():
-        return False
-
-    try:
-        obj = torch.load(ckpt_path, map_location=device, weights_only=False)
-    except TypeError:
-        obj = torch.load(ckpt_path, map_location=device)
-    except Exception:
-        return False
-
-    try:
-        if isinstance(obj, dict) and "model_state_dict" in obj:
-            model.load_state_dict(obj["model_state_dict"], strict=False)
-            return True
-        if isinstance(obj, dict):
-            model.load_state_dict(obj, strict=False)
-            return True
-    except Exception:
-        return False
-
-    return False
-
-
-def _standardize_full_targets(
-    df: pd.DataFrame,
-    mean_s: pd.Series,
-    std_s: pd.Series,
-    target_cols: List[str],
-) -> np.ndarray:
-    x = df[target_cols].copy()
-    x = x.apply(pd.to_numeric, errors="coerce").copy()
-    x = x.fillna(method="ffill").fillna(method="bfill").fillna(0.0)
-
-    mean_s = pd.Series(mean_s).reindex(target_cols).fillna(0.0)
-    std_s = pd.Series(std_s).reindex(target_cols).replace(0, 1.0).fillna(1.0)
-
-    x_std = (x - mean_s) / std_s
-    x_std = x_std.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return x_std.to_numpy(dtype=np.float32)
 
 
 # ============================================================
@@ -373,7 +247,7 @@ def backfill_by_horizon_period(
                 date_col=date_col,
                 h_next=int(hh),
                 save_history=True,
-                retrain=True,
+                retrain=True,   # backtest đúng
                 train_cfg=train_cfg,
                 actual_full=sub,
             )
@@ -413,6 +287,7 @@ def run_forecast(
     train_cfg: Dict,
     actual_full: Optional[pd.DataFrame] = None,
 ):
+    
     device_train = "cuda" if torch.cuda.is_available() else "cpu"
 
     missing = [c for c in TARGET_COLS if c not in df.columns]
@@ -424,22 +299,108 @@ def run_forecast(
     df[date_col] = _parse_dates_any(df[date_col])
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
 
+    # ---- targets (price)
     try:
-        Y = _coerce_targets_numeric(df, TARGET_COLS)
+        Y_price = _coerce_targets_numeric(df, TARGET_COLS).astype(np.float32)
     except Exception as e:
         st.error(f"Lỗi chuyển target sang số: {e}")
         return None, False
 
-    T, D = Y.shape
-    if T <= K + H:
+    T, D_out = Y_price.shape
+    if D_out != len(TARGET_COLS):
+        st.error(f"D_out mismatch: got {D_out}, expected {len(TARGET_COLS)}")
+        return None, False
+
+    # overwrite targets in df as numeric
+    for j, c in enumerate(TARGET_COLS):
+        df[c] = Y_price[:, j]
+
+    # ---- infer feature cols (all numeric-ish) and coerce
+    def _coerce_numeric_series(s: pd.Series):
+        if pd.api.types.is_numeric_dtype(s):
+            return s.astype(float)
+        return pd.to_numeric(s, errors="coerce")
+
+    feature_cols = []
+    for c in df.columns:
+        if c == date_col:
+            continue
+        if c in TARGET_COLS:
+            continue
+        x = _coerce_numeric_series(df[c])
+        ok_ratio = float(np.isfinite(x.to_numpy(dtype=float)).mean())
+        if ok_ratio >= 0.80:
+            df[c] = x
+            feature_cols.append(c)
+
+    # always include targets as features
+    for c in TARGET_COLS:
+        if c not in feature_cols:
+            feature_cols.append(c)
+
+    # fill numeric missing
+    for c in feature_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+    D_in = len(feature_cols)
+
+    # ---- delta targets
+    Y_delta = np.zeros_like(Y_price, dtype=np.float32)
+    Y_delta[1:] = Y_price[1:] - Y_price[:-1]
+
+    if T <= K + H + 2:
         st.error(f"Dữ liệu quá ngắn (T={T}) so với K={K}, H={H}.")
         return None, False
 
-    # chỉ dùng date + target để fine-tune
-    df_fit = df[[date_col] + TARGET_COLS].copy()
+    val_len = max(int(T * VAL_RATIO), K + H + 1)
+    train_len = T - val_len
+
+    X_raw = df[feature_cols].values.astype(np.float32)
+
+    X_tr = X_raw[:train_len]
+    d_tr = Y_delta[:train_len]
+
+    # standardize X and delta
+    Xtr_std, x_mu, x_sd = standardize(X_tr)
+    dtr_std, y_mu, y_sd = standardize(d_tr)
+
+    X_std_full = (X_raw - x_mu.reshape(1, -1)) / (x_sd.reshape(1, -1) + 1e-8)
+    d_std_full = (Y_delta - y_mu.reshape(1, -1)) / (y_sd.reshape(1, -1) + 1e-8)
+
+    def build_windows_xy(Xs: np.ndarray, Ys: np.ndarray, K_: int, H_: int):
+        Xs = np.asarray(Xs, dtype=np.float32)
+        Ys = np.asarray(Ys, dtype=np.float32)
+        if Xs.ndim != 2 or Ys.ndim != 2:
+            raise ValueError(f"build_windows_xy expects 2D arrays, got X={Xs.shape}, Y={Ys.shape}")
+        if Xs.shape[0] != Ys.shape[0]:
+            raise ValueError(f"X/Y length mismatch: {Xs.shape[0]} vs {Ys.shape[0]}")
+        Tt = Xs.shape[0]
+        N = Tt - int(K_) - int(H_) + 1
+        if N <= 0:
+            raise ValueError(f"Not enough data for windows: T={Tt}, K={K_}, H={H_} => N={N}")
+        Xw = np.empty((N, int(K_), Xs.shape[1]), dtype=np.float32)
+        Yw = np.empty((N, int(H_), Ys.shape[1]), dtype=np.float32)
+        for i in range(N):
+            Xw[i] = Xs[i : i + int(K_)]
+            Yw[i] = Ys[i + int(K_) : i + int(K_) + int(H_)]
+        return Xw, Yw
+
+    Xtr_w, Ytr_w = build_windows_xy(X_std_full[:train_len], d_std_full[:train_len], K, H)
+    Xva_w, Yva_w = build_windows_xy(X_std_full[train_len - K :], d_std_full[train_len - K :], K, H)
+
+    tr_ld = DataLoader(WindowDS(Xtr_w, Ytr_w), batch_size=int(train_cfg["batch"]), shuffle=True)
+    va_ld = DataLoader(WindowDS(Xva_w, Yva_w), batch_size=int(train_cfg["batch"]), shuffle=False)
 
     RUN = RUN_OUTPUT_DIR
     RUN.mkdir(parents=True, exist_ok=True)
+
+    # files for reuse
+    feat_path = RUN / "feature_cols.json"
+    xmu_path = RUN / "x_mu.npy"
+    xsd_path = RUN / "x_sd.npy"
+    ymu_path = RUN / "y_mu.npy"
+    ysd_path = RUN / "y_sd.npy"
+    alpha_path = RUN / "blend_alpha.json"
 
     ens_n = int(train_cfg.get("ensemble_n", 1))
     ens_n = max(1, min(ens_n, 7))
@@ -447,120 +408,11 @@ def run_forecast(
     run_seed_base = _ts_seed_base()
     seeds = [run_seed_base + i * 17 for i in range(ens_n)]
 
-    preds_std_list = []
-    pb = st.progress(0.0)
+    tgt_idx = [feature_cols.index(c) for c in TARGET_COLS]
 
-    for si, seed_i in enumerate(seeds):
-        set_seed(int(seed_i))
-        ckpt_path = RUN / f"hybrid_trinet_seed{si}.pt"
-
-        model = _build_model(D=D, device=device_train)
-        loaded = _load_ckpt_flexible(model, ckpt_path, device_train)
-
-        if retrain or (not loaded):
-            def _status(ep_now: int, total_ep: int):
-                base = si / max(1, len(seeds))
-                frac = ep_now / max(1, total_ep)
-                pb.progress(min(0.99, base + frac / max(1, len(seeds))))
-
-            with st.spinner(f"Đang fine-tune model seed {si + 1}/{len(seeds)}..."):
-                try:
-                    ft_result = fine_tune_model(
-                        model=model,
-                        df=df_fit,
-                        target_cols=list(TARGET_COLS),
-                        feature_cols=list(TARGET_COLS),
-                        date_col=date_col,
-                        k=int(K),
-                        h=int(H),
-                        val_ratio=float(VAL_RATIO),
-                        epochs=int(train_cfg.get("epochs", 5)),
-                        batch_size=int(train_cfg.get("batch", 64)),
-                        lr=float(train_cfg.get("lr", 1e-5)),
-                        weight_decay=float(train_cfg.get("wd", 1e-4)),
-                        focus_weight=float(train_cfg.get("focus_w", 3.0)),
-                        focus_n=min(5, int(H)),
-                        loss_name="smooth_l1" if str(train_cfg.get("loss", "huber")).lower() == "huber" else str(train_cfg.get("loss", "huber")).lower(),
-                        shuffle=True,
-                        seed=None,  # để fine-tune mỗi lần upload có thể khác nhau
-                        device=device_train,
-                    )
-                except Exception as e:
-                    st.error(f"Fine-tune lỗi ở seed {si}: {e}")
-                    return None, False
-
-            try:
-                save_finetuned_bundle(
-                    save_path=str(ckpt_path),
-                    model=ft_result.model,
-                    feature_cols=ft_result.feature_cols,
-                    target_cols=ft_result.target_cols,
-                    mean_=ft_result.mean_,
-                    std_=ft_result.std_,
-                    extra={
-                        "seed_index": si,
-                        "epochs": int(train_cfg.get("epochs", 5)),
-                        "lr": float(train_cfg.get("lr", 1e-5)),
-                        "best_val_loss": float(ft_result.best_val_loss),
-                    },
-                )
-            except Exception:
-                pass
-
-            model = ft_result.model
-            mean_s = pd.Series(ft_result.mean_)
-            std_s = pd.Series(ft_result.std_)
-        else:
-            try:
-                meta = load_bundle_meta(str(ckpt_path))
-                mean_s = pd.Series(meta.get("mean", {})).reindex(TARGET_COLS).fillna(0.0)
-                std_s = pd.Series(meta.get("std", {})).reindex(TARGET_COLS).replace(0, 1.0).fillna(1.0)
-            except Exception:
-                mean_s = pd.Series(df_fit[TARGET_COLS].mean(axis=0), index=TARGET_COLS)
-                std_s = pd.Series(df_fit[TARGET_COLS].std(axis=0).replace(0, 1.0).fillna(1.0), index=TARGET_COLS)
-
-        # seed cuối cùng để rollout
-        Y_std_full = _standardize_full_targets(
-            df=df_fit,
-            mean_s=mean_s,
-            std_s=std_s,
-            target_cols=list(TARGET_COLS),
-        )
-        seed_std = Y_std_full[-K:]  # [K, D]
-
-        F_std = roll_autoregressive_safe(
-            model,
-            seed_std=seed_std,
-            H_total=int(h_next),
-            H=H,
-            device=device_train,
-            step_size=5,
-        )
-
-        F_std = ensure_F_shape(F_std, int(h_next), D)
-        preds_std_list.append(F_std)
-
-        pb.progress(min(0.99, (si + 1) / max(1, len(seeds))))
-
-    pb.progress(1.0)
-
-    # ensemble trung bình trên không gian standardized
-    F_std_ens = np.mean(np.stack(preds_std_list, axis=0), axis=0)
-
-    # inverse scale bằng mean/std của model cuối
-    F = F_std_ens * std_s.to_numpy(dtype=np.float32).reshape(1, D) + mean_s.to_numpy(dtype=np.float32).reshape(1, D)
-
-    last_date = pd.Timestamp(df[date_col].max()).normalize()
-    idx = pd.bdate_range(last_date + BDay(1), periods=int(h_next))
-
-    out = pd.DataFrame(F, index=idx, columns=TARGET_COLS)
-    out_to_save = out.reset_index().rename(columns={"index": date_col})[[date_col] + TARGET_COLS].copy()
-
-    # calibration (optional)
     calib = {}
     history_dir = _history_dir_for_h(int(h_next))
     hist_files = list(history_dir.glob("forecast_until_*.csv")) if history_dir.exists() else []
-
     if hist_files and (actual_full is not None):
         try:
             calib = fit_calibration_from_history(
@@ -574,22 +426,249 @@ def run_forecast(
         except Exception:
             calib = {}
 
+    def _apply_calib_vec(v_raw: np.ndarray) -> np.ndarray:
+        v = np.asarray(v_raw, dtype=np.float32).copy()
+        if not calib:
+            return v
+        for j, c in enumerate(TARGET_COLS):
+            if c not in calib:
+                continue
+            a = float(calib[c].get("a", 1.0))
+            b = float(calib[c].get("b", 0.0))
+            v[j] = a * v[j] + b
+        return v
+
+    preds_all = []
+    pb = st.progress(0.0)
+
+    # save scalers/cols
+    try:
+        feat_path.write_text(
+            json.dumps({"feature_cols": feature_cols, "tgt_idx": tgt_idx, "K": int(K), "H": int(H)}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        np.save(xmu_path, x_mu.astype(np.float32))
+        np.save(xsd_path, x_sd.astype(np.float32))
+        np.save(ymu_path, y_mu.astype(np.float32))
+        np.save(ysd_path, y_sd.astype(np.float32))
+    except Exception:
+        pass
+
+    alpha = None
+    if alpha_path.exists() and (not retrain):
+        try:
+            obj = json.loads(alpha_path.read_text(encoding="utf-8"))
+            alpha = np.asarray(obj.get("alpha", None), dtype=np.float32)
+            if alpha.size != D_out:
+                alpha = None
+        except Exception:
+            alpha = None
+
+    for si, seed_i in enumerate(seeds):
+        set_seed(int(seed_i))
+        ckpt_path = RUN / f"hybrid_trinet_seed{si}.pt"
+
+        model = HybridTriNet(
+            k=K,
+            D=D_out,
+            H=H,
+            D_in=D_in,
+            D_out=D_out,
+            d_feat=96,
+            kan_M=8,
+            kan_depth=2,
+            kan_drop=0.10,
+            gru_hidden=128,
+            gru_layers=1,
+            gru_drop=0.10,
+            attn_dmodel=64,
+            attn_heads=4,
+            attn_layers=2,
+            attn_drop=0.05,
+            patch_len=16,
+            stride=8,
+        ).to(device_train)
+
+        loaded = False
+        if (not retrain) and ckpt_path.exists():
+            try:
+                model.load_state_dict(torch.load(ckpt_path, map_location=device_train))
+                loaded = True
+            except Exception:
+                loaded = False
+
+        if not loaded:
+            def _status_cb(ep, epochs, tr_loss, val_mae, lr_val):
+                base = si / max(1, len(seeds))
+                pb.progress(min(0.99, base + (ep / max(1, epochs)) / max(1, len(seeds))))
+
+            with st.spinner("Đang dự đoán với mô hình HybridTriNet..."):
+                model, _best_val = fit_model_better(
+                    model=model,
+                    tr_loader=tr_ld,
+                    va_loader=va_ld,
+                    mu=y_mu,
+                    sd=y_sd,
+                    epochs=int(train_cfg["epochs"]),
+                    lr=float(train_cfg["lr"]),
+                    loss_name=str(train_cfg["loss"]),
+                    weight_decay=float(train_cfg["wd"]),
+                    grad_clip=float(train_cfg["clip"]),
+                    patience=int(train_cfg["patience"]),
+                    use_amp=bool(train_cfg["amp"]),
+                    status_cb=_status_cb,
+                    device=device_train,
+                    focus_h=int(train_cfg.get("focus_h", 5)),
+                    focus_w=float(train_cfg.get("focus_w", 3.0)),
+                    use_delta_price_loss=True,
+                    tgt_idx=tgt_idx,
+                    x_mu=x_mu,
+                    x_sd=x_sd,
+                    y_mu=y_mu,
+                    y_sd=y_sd,
+                    alpha_delta=float(train_cfg.get("alpha_delta", 0.20)),
+                    beta_price=float(train_cfg.get("beta_price", 1.00)),
+                    eps_mape=float(train_cfg.get("eps_mape", 1e-3)),
+                )
+
+            try:
+                torch.save(model.state_dict(), ckpt_path)
+            except Exception:
+                pass
+
+        # fit alpha on val (once)
+        if alpha is None:
+            alpha = np.ones((D_out,), dtype=np.float32)
+            P, N, Tt = [], [], []
+            model.eval()
+            with torch.no_grad():
+                for xb, yb in va_ld:
+                    xb = xb.to(device_train)
+                    yb = yb.to(device_train)
+                    out = model(xb)
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+                    out = out.view(out.size(0), int(H), int(D_out))
+
+                    pred_d1 = out[:, 0, :].detach().cpu().numpy() * y_sd.reshape(1, -1) + y_mu.reshape(1, -1)
+                    true_d1 = yb[:, 0, :].detach().cpu().numpy() * y_sd.reshape(1, -1) + y_mu.reshape(1, -1)
+
+                    last_price = xb[:, -1, tgt_idx].detach().cpu().numpy() * x_sd[tgt_idx].reshape(1, -1) + x_mu[tgt_idx].reshape(1, -1)
+                    pred1 = last_price + pred_d1
+                    true1 = last_price + true_d1
+
+                    P.append(pred1); N.append(last_price); Tt.append(true1)
+
+            if P:
+                P = np.concatenate(P, axis=0)
+                N = np.concatenate(N, axis=0)
+                Tt = np.concatenate(Tt, axis=0)
+                grid = np.linspace(0.0, 1.0, 101, dtype=np.float32)
+                for j in range(D_out):
+                    best_a, best_mae = 1.0, 1e18
+                    for a in grid:
+                        pred_bl = a * P[:, j] + (1.0 - a) * N[:, j]
+                        mae = float(np.mean(np.abs(pred_bl - Tt[:, j])))
+                        if mae < best_mae:
+                            best_mae, best_a = mae, float(a)
+                    alpha[j] = best_a
+
+                try:
+                    alpha_path.write_text(json.dumps({"alpha": alpha.tolist()}, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+
+        # forecast roll (exog-aware)
+        hist = df.copy().reset_index(drop=True)
+        last_date = pd.Timestamp(hist[date_col].max()).normalize()
+        fut_dates = pd.bdate_range(last_date + BDay(1), periods=int(h_next))
+
+        prev_price = hist.iloc[-1][TARGET_COLS].to_numpy(dtype=np.float32)
+        pred_rows = []
+        done = 0
+
+        def _update_calendar_row(row: pd.Series, d: pd.Timestamp):
+            dow = int(pd.Timestamp(d).weekday())
+            if "dow" in row.index: row["dow"] = float(dow)
+            if "weekday" in row.index: row["weekday"] = float(dow)
+            if "month" in row.index: row["month"] = float(d.month)
+            if "year" in row.index: row["year"] = float(d.year)
+            if "dom" in row.index: row["dom"] = float(d.day)
+            if "NgayTrongTuan" in row.index: row["NgayTrongTuan"] = float(dow + 1)
+            if "ThangTrongNam" in row.index: row["ThangTrongNam"] = float(d.month)
+            if "QuyTrongNam" in row.index: row["QuyTrongNam"] = float(((d.month - 1) // 3) + 1)
+            if "Nam" in row.index: row["Nam"] = float(d.year)
+
+        while done < int(h_next):
+            x_win_raw = hist[feature_cols].iloc[-K:].to_numpy(dtype=np.float32)
+            x_win_std = (x_win_raw - x_mu.reshape(1, -1)) / (x_sd.reshape(1, -1) + 1e-8)
+
+            xb = torch.tensor(x_win_std, dtype=torch.float32, device=device_train).unsqueeze(0)
+            out = model(xb)
+            if isinstance(out, (tuple, list)):
+                out = out[0]
+            out = out.view(out.size(0), int(H), int(D_out))
+
+            out_std = out.squeeze(0).detach().cpu().numpy()
+            pred_d_raw = out_std * y_sd.reshape(1, -1) + y_mu.reshape(1, -1)
+
+            take = min(int(H), int(h_next) - done)
+            for j in range(take):
+                d = pd.Timestamp(fut_dates[done + j]).normalize()
+                raw = prev_price + pred_d_raw[j]
+                cal = _apply_calib_vec(raw)
+                final = alpha * cal + (1.0 - alpha) * prev_price
+
+                row = {date_col: d}
+                for k, c in enumerate(TARGET_COLS):
+                    row[f"{c}_raw"] = float(raw[k])
+                    row[f"{c}_cal"] = float(cal[k])
+                    row[c] = float(final[k])
+                pred_rows.append(row)
+
+                new_row = hist.iloc[-1].copy()
+                new_row[date_col] = d
+                _update_calendar_row(new_row, d)
+                for sc in ["news_abnormal", "impact_score", "News_Abnormal", "Impact_Score"]:
+                    if sc in new_row.index:
+                        new_row[sc] = 0.0
+                for k, c in enumerate(TARGET_COLS):
+                    new_row[c] = float(final[k])
+                hist = pd.concat([hist, new_row.to_frame().T], ignore_index=True)
+
+                prev_price = final.astype(np.float32)
+
+            done += take
+
+        out_df = pd.DataFrame(pred_rows)
+        preds_all.append(out_df)
+
+        pb.progress(min(1.0, (si + 1) / max(1, len(seeds))))
+
+    pb.progress(1.0)
+
+    # ensemble average on FINAL columns
+    if len(preds_all) == 1:
+        out_to_save = preds_all[0].copy()
+    else:
+        base = preds_all[0][[date_col] + [f"{c}_raw" for c in TARGET_COLS] + [f"{c}_cal" for c in TARGET_COLS]].copy()
+        finals = [dff[TARGET_COLS].to_numpy(dtype=np.float32) for dff in preds_all]
+        F = np.mean(np.stack(finals, axis=0), axis=0)
+        out_to_save = base
+        for j, c in enumerate(TARGET_COLS):
+            out_to_save[c] = F[:, j]
+
     if calib:
-        out_to_save = apply_calibration(out_to_save, calib, TARGET_COLS, keep_raw=True)
         st.caption(
             "Calibration (actual ≈ a*pred + b): "
             + " | ".join([f"{k}: a={v['a']:.4f}, b={v['b']:.4f}, n={v['n']}" for k, v in calib.items()])
         )
+    st.caption("Blend alpha: " + ", ".join([f"{c}={alpha[i]:.2f}" for i, c in enumerate(TARGET_COLS)]))
 
     saved_ok = False
     if bool(save_history):
-        fname_hist = save_forecast_history(
-            out_to_save,
-            last_date,
-            int(h_next),
-            date_col,
-            run_seed_base=run_seed_base,
-        )
+        last_date = pd.Timestamp(df[date_col].max()).normalize()
+        fname_hist = save_forecast_history(out_to_save, last_date, int(h_next), date_col, run_seed_base=run_seed_base)
         st.caption(f"Đã lưu forecast_history: {fname_hist.name}")
         saved_ok = True
 
@@ -630,6 +709,9 @@ def main():
         except Exception:
             base0 = None
 
+    # =========================
+    # Candlestick preview
+    # =========================
     with st.container(border=True):
         section_header("chart-candle", "Biểu đồ nến (dữ liệu)")
 
@@ -659,22 +741,36 @@ def main():
 
     soft_divider()
 
+    # =========================
+    # Forecast controls
+    # =========================
     with st.container(border=True):
         section_header("rocket", "Thiết lập dự đoán")
 
         with st.expander("Cấu hình", expanded=False):
             cc = st.columns(4)
+            default_batch = defs["DEFAULT_BATCH_GPU"] if torch.cuda.is_available() else defs["DEFAULT_BATCH_CPU"]
+            loss_options = ["huber", "mae", "mse"]
+            loss_index = loss_options.index(defs["DEFAULT_LOSS"]) if defs["DEFAULT_LOSS"] in loss_options else 0
             train_cfg = {
-                "batch": cc[0].number_input("Batch", 16, 512, 128, 16),
-                "epochs": cc[1].number_input("Epochs", 1, 100, 5, 1),
-                "lr": cc[2].number_input("LR", 1e-6, 5e-3, 1e-5, 1e-6, format="%.6f"),
-                "loss": cc[3].selectbox("Loss", ["huber", "mae", "mse"], index=0),
-                "patience": 30,
-                "ensemble_n": 1,
-                "wd": 1e-4,
-                "clip": 1.0,
-                "amp": False,
-                "focus_w": 3.0,
+                "batch": cc[0].number_input("Batch", 16, 512, int(default_batch), 16),
+                "epochs": cc[1].number_input("Epochs", 10, 500, int(defs["DEFAULT_EPOCHS"]), 10),
+                "lr": cc[2].number_input("LR", 1e-6, 5e-3, float(defs["DEFAULT_LR"]), 1e-5, format="%.6f"),
+                "loss": cc[3].selectbox("Loss", loss_options, index=loss_index),
+
+                "patience": int(defs["DEFAULT_PATIENCE"]),
+                "ensemble_n": int(defs["DEFAULT_ENSEMBLE_N"]),
+                "wd": float(defs["DEFAULT_WD"]),
+                "clip": float(defs["DEFAULT_CLIP"]),
+                "amp": bool(defs["DEFAULT_AMP"]),
+
+                "focus_h": int(defs["DEFAULT_FOCUS_H"]),
+                "focus_w": float(defs["DEFAULT_FOCUS_W"]),
+
+                "alpha_delta": float(defs["DEFAULT_ALPHA_DELTA"]),
+                "beta_price": float(defs["DEFAULT_BETA_PRICE"]),
+                "eps_mape": float(defs["DEFAULT_EPS_MAPE"]),
+
                 "calib_min_points": 30,
                 "calib_halflife": 180,
             }
@@ -698,11 +794,14 @@ def main():
                 key="save_history_main",
             )
         with cc4:
-            st.button("Chạy dự đoán", use_container_width=True, key="run_btn_main", type="primary")
+            st.button("Chạy dự đoán", width="stretch", key="run_btn_main", type="primary")
 
     if st.session_state.get("run_btn_main", False):
         st.session_state.run_triggered = True
 
+    # =========================
+    # Run single forecast
+    # =========================
     if st.session_state.run_triggered:
         st.session_state.run_triggered = False
 
@@ -855,6 +954,9 @@ def main():
                 use_container_width=True,
             )
 
+    # =========================
+    # Compare with actual + Backfill theo chu kỳ H
+    # =========================
     with st.container(border=True):
         section_header("clipboard-check", "So sánh dự đoán với thực tế")
 
@@ -874,15 +976,82 @@ def main():
             st.error("Không tìm thấy root.xlsx. Hãy đặt file tại base/root.xlsx hoặc cùng thư mục với clean.xlsx.")
             return
 
+        # # -------- Backfill theo chu kỳ H (KHÔNG CẦN UPLOAD) --------
+        # with st.expander("Backfill theo chu kỳ H (30/60/100): mỗi H ngày dự đoán 1 lần đến nay (không cần upload)", expanded=False):
+        #     try:
+        #         df_full_train = _read_actual_full(clean_path_str, date_col)
+        #         df_full_train = df_full_train.copy()
+        #         df_full_train[date_col] = _parse_dates_any(df_full_train[date_col])
+        #         df_full_train = df_full_train.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+        #     except Exception as e:
+        #         df_full_train = None
+        #         st.error(f"Lỗi đọc clean.xlsx để backfill: {e}")
+
+        #     if df_full_train is None or df_full_train.empty:
+        #         st.warning("Không có dữ liệu clean.xlsx để backfill.")
+        #     else:
+        #         dmin = pd.Timestamp(df_full_train[date_col].min()).normalize()
+        #         dmax = pd.Timestamp(df_full_train[date_col].max()).normalize()
+
+        #         c1, c2 = st.columns([0.5, 0.5], vertical_alignment="bottom")
+        #         with c1:
+        #             bf_start = st.date_input(
+        #                 "Start asof",
+        #                 value=max(START0, dmin).date(),
+        #                 min_value=dmin.date(),
+        #                 max_value=dmax.date(),
+        #                 key="bf_period_start",
+        #             )
+        #         with c2:
+        #             bf_end = st.date_input(
+        #                 "End asof (đến nay)",
+        #                 value=dmax.date(),
+        #                 min_value=dmin.date(),
+        #                 max_value=dmax.date(),
+        #                 key="bf_period_end",
+        #             )
+
+        #         bf_horizons = st.multiselect(
+        #             "Chọn H cần backfill (mỗi H ngày chạy 1 lần)",
+        #             [30, 60, 100],
+        #             default=[30, 100],
+        #             key="bf_period_horizons",
+        #         )
+
+        #         st.caption(
+        #             "Số file history hiện có: "
+        #             + " | ".join([f"H={hh}: {_count_history_files(_history_dir_for_h(int(hh)))}" for hh in [30, 60, 100]])
+        #         )
+
+        #         with st.expander("Cấu hình train cho backfill (khuyên dùng nhẹ)", expanded=False):
+        #             ccc = st.columns(3)
+        #             train_cfg_bf = dict(train_cfg)
+        #             train_cfg_bf["epochs"] = ccc[0].number_input("Epochs (backfill)", 5, 200, 30, 5, key="bf_epochs")
+        #             train_cfg_bf["batch"] = ccc[1].number_input("Batch (backfill)", 16, 512, int(train_cfg_bf["batch"]), 16, key="bf_batch")
+        #             train_cfg_bf["lr"] = ccc[2].number_input("LR (backfill)", 1e-6, 5e-3, float(train_cfg_bf["lr"]), 1e-5, format="%.6f", key="bf_lr")
+
+        #         if st.button("Chạy backfill theo chu kỳ H", type="primary", key="bf_period_run"):
+        #             done, total = backfill_by_horizon_period(
+        #                 df_full=df_full_train,
+        #                 date_col=date_col,
+        #                 start_date=pd.Timestamp(bf_start).normalize(),
+        #                 end_date=pd.Timestamp(bf_end).normalize(),
+        #                 horizons=[int(x) for x in bf_horizons],
+        #                 train_cfg=train_cfg_bf,
+        #             )
+        #             st.success(f"Backfill xong: {done}/{total} lượt.")
+
+        # -------- Evaluate/plot --------
         h_eval = st.selectbox("Kịch bản hiển thị (H)", [5, 30, 60, 100], index=0, key="hist_h_eval")
         hist_dir = _history_dir_for_h(int(h_eval))
         if not hist_dir.exists():
             st.info("Chưa có thư mục forecast_history cho H này.")
             return
 
+        # đọc history bằng loader robust (không phụ thuộc format trong history_eval.py)
         history_long = _load_history_long_from_dir(hist_dir, targets=list(TARGET_COLS), date_col_hint=date_col)
         if history_long is None or history_long.empty:
-            st.warning("Chưa có forecast_history (hoặc không đọc được file forecast_until_*.csv).")
+            st.warning("Chưa có lịch sử")
             return
 
         actual_wide = load_actual_root(root_xlsx, targets=TARGET_COLS)
@@ -903,78 +1072,7 @@ def main():
         act_long["actual"] = pd.to_numeric(act_long["actual"], errors="coerce")
         act_long = act_long.dropna(subset=["date"]).copy()
 
-        hist_mode = st.selectbox(
-            "Cách dùng forecast_history để tính metrics",
-            [
-                "Trung bình theo (date,target) từ tất cả file",
-                "Tính trên mọi dòng (đếm overlap)",
-                "Chỉ dùng forecast mới nhất (latest)",
-                "Chọn forecast tốt nhất theo actual (ORACLE - upper bound)",
-            ],
-            index=0,
-            key="hist_mode_eval",
-            help=(
-                "• Trung bình: nếu 1 ngày được dự báo nhiều lần, lấy mean(pred) rồi mới so với actual.\n"
-                "• Đếm overlap: mỗi lần dự báo là 1 điểm -> ngày trùng sẽ được tính nhiều lần.\n"
-                "• Latest: giữ đúng 1 forecast mới nhất cho mỗi (date,target).\n"
-                "• ORACLE: chọn dự báo có sai số nhỏ nhất so với actual cho mỗi (date,target) (chỉ để tham khảo trần trên)."
-            ),
-        )
-
-        if hist_mode.startswith("Chọn forecast tốt nhất"):
-            hist_latest_full = latest_asof_per_date_target(history_use)
-            hist_candidates = _filter_valid_forecast(history_use)
-
-            cand_cmp = hist_candidates.rename(columns={"yhat": "pred"}).merge(
-                act_long[["date", "target", "actual"]],
-                on=["date", "target"],
-                how="inner",
-            )
-            cand_cmp["pred"] = pd.to_numeric(cand_cmp["pred"], errors="coerce")
-            cand_cmp["actual"] = pd.to_numeric(cand_cmp["actual"], errors="coerce")
-            cand_cmp = cand_cmp.dropna(subset=["pred", "actual"]).copy()
-
-            if cand_cmp.empty:
-                hist = hist_latest_full.copy()
-                hist["_picked_mode"] = "LATEST_FALLBACK"
-            else:
-                cand_cmp["ae"] = (cand_cmp["pred"] - cand_cmp["actual"]).abs()
-                idx = cand_cmp.groupby(["date", "target"])["ae"].idxmin()
-                best = cand_cmp.loc[idx].drop(columns=["ae"]).copy()
-
-                keep_cols = ["date", "target", "pred"]
-                meta_cols = [c for c in ["train_last_date", "generated_at", "run_seed_base", "source_file"] if c in best.columns]
-                best2 = best[keep_cols + meta_cols].rename(columns={"pred": "yhat"}).copy()
-
-                hist_latest_full = hist_latest_full.copy()
-                hist_latest_full["_key"] = hist_latest_full["date"].astype(str) + "||" + hist_latest_full["target"].astype(str)
-                best2["_key"] = best2["date"].astype(str) + "||" + best2["target"].astype(str)
-
-                best_map = best2.set_index("_key")
-                hist_map = hist_latest_full.set_index("_key")
-
-                for col in ["yhat"] + meta_cols:
-                    if col in best_map.columns and col in hist_map.columns:
-                        hist_map.loc[best_map.index.intersection(hist_map.index), col] = best_map.loc[
-                            best_map.index.intersection(hist_map.index), col
-                        ]
-
-                hist = hist_map.reset_index(drop=False).drop(columns=["_key"], errors="ignore")
-                hist["_picked_mode"] = "ORACLE_WHERE_POSSIBLE"
-
-        elif hist_mode.startswith("Trung bình"):
-            hist = _agg_mean_by_date_target(history_use)
-            hist["_picked_mode"] = "MEAN_DATE_TARGET"
-        elif hist_mode.startswith("Tính trên mọi dòng"):
-            hist = _filter_valid_forecast(history_use)
-            hist["_picked_mode"] = "ALL_ROWS_OVERLAP"
-        else:
-            hist = latest_asof_per_date_target(history_use)
-            hist["_picked_mode"] = "LATEST_ONLY"
-
-        if hist is None or hist.empty:
-            st.warning("History sau khi lọc/gộp đang rỗng.")
-            return
+        hist = latest_asof_per_date_target(history_use)
 
         cmp_base = hist.rename(columns={"yhat": "pred"}).merge(
             act_long[["date", "target", "actual"]],
@@ -982,50 +1080,34 @@ def main():
             how="left",
         )
         cmp_base["pred"] = pd.to_numeric(cmp_base["pred"], errors="coerce")
-        cmp_base["actual"] = pd.to_numeric(cmp_base["actual"], errors="coerce")
         cmp_base = cmp_base[cmp_base["target"].isin(list(TARGET_COLS))].copy()
         cmp_base = cmp_base[cmp_base["date"] >= START0].copy()
         cmp_base = cmp_base.sort_values(["target", "date"]).reset_index(drop=True)
 
         cmp_eval = cmp_base.dropna(subset=["actual", "pred"]).copy()
 
-        section_header("calculator", "Số liệu")
+        section_header("calculator", "Số liệu ")
         if cmp_eval.empty:
             st.warning("Chưa có overlap để tính metrics")
         else:
             met = compute_metrics(cmp_eval[["date", "target", "actual", "pred"]])
-            st.dataframe(met, use_container_width=True, hide_index=True)
+            st.dataframe(met, width="stretch", hide_index=True)
 
-            st.caption(f"Matched points: {len(cmp_eval):,} | Mode={hist.get('_picked_mode', 'N/A').iloc[0] if '_picked_mode' in hist.columns and len(hist)>0 else 'N/A'}")
+        # show_only_actual = st.checkbox("Chỉ hiển thị dòng có actual", value=False, key="show_only_actual_tbl")
 
         section_header("table", "Bảng so sánh theo target")
-
-        show_compact = True
-        if hist_mode.startswith("Tính trên mọi dòng"):
-            show_compact = st.checkbox("Gộp theo (date,target) để xem gọn (table/plot)", value=True, key="cmp_compact")
-
-        cmp_for_table = cmp_base.copy()
-        if hist_mode.startswith("Tính trên mọi dòng") and show_compact:
-            agg = (
-                cmp_base.groupby(["date", "target"], as_index=False)
-                        .agg(
-                            actual=("actual", "first"),
-                            pred=("pred", "mean"),
-                            n_forecasts=("pred", "size"),
-                        )
-            )
-            cmp_for_table = agg
-
         tabs_tbl = st.tabs(list(TARGET_COLS))
         for tab, t in zip(tabs_tbl, list(TARGET_COLS)):
             with tab:
-                dd = cmp_for_table[cmp_for_table["target"] == t].copy().sort_values("date").reset_index(drop=True)
+                dd = cmp_base[cmp_base["target"] == t].copy().sort_values("date").reset_index(drop=True)
                 dd["actual"] = pd.to_numeric(dd["actual"], errors="coerce")
                 dd["pred"] = pd.to_numeric(dd["pred"], errors="coerce")
+                # if show_only_actual:
+                #     dd = dd.dropna(subset=["actual"])
+                keep_tbl = [c for c in ["date", "actual", "pred", "train_last_date", "generated_at"] if c in dd.columns]
+                st.dataframe(dd[keep_tbl], width="stretch", height=360, hide_index=True)
 
-                keep_tbl = [c for c in ["date", "actual", "pred", "n_forecasts", "train_last_date", "generated_at"] if c in dd.columns]
-                st.dataframe(dd[keep_tbl], use_container_width=True, height=360, hide_index=True)
-
+        # overlay lines (30/60/100) - latest_asof per date,target
         overlay_hs = st.multiselect(
             "Biểu đồ đường dự đoán (overlay)",
             [30, 60, 100],
@@ -1060,16 +1142,9 @@ def main():
 
         umax = max(s.max() for s in date_candidates)
         ud1 = START0
-        ud2 = pd.Timestamp(umax).normalize()
+        ud2 = pd.Timestamp(umax).normalize()   
 
         section_header("chart-line", "Biểu đồ thực tế với Dự đoán")
-
-        cmp_for_plot = cmp_base.copy()
-        if hist_mode.startswith("Tính trên mọi dòng"):
-            cmp_for_plot = (
-                cmp_base.groupby(["date", "target"], as_index=False)
-                        .agg(actual=("actual", "first"), pred=("pred", "mean"))
-            )
 
         tabs = st.tabs(list(TARGET_COLS))
         for tab, t in zip(tabs, list(TARGET_COLS)):
@@ -1083,7 +1158,7 @@ def main():
                 a["series"] = "actual"
                 frames.append(a)
 
-                b = cmp_for_plot[cmp_for_plot["target"] == t][["date", "pred"]].copy()
+                b = cmp_base[cmp_base["target"] == t][["date", "pred"]].copy()
                 b["date"] = pd.to_datetime(b["date"], errors="coerce", dayfirst=True).dt.normalize()
                 b["pred"] = pd.to_numeric(b["pred"], errors="coerce")
                 b = b.rename(columns={"pred": "value"})
@@ -1134,7 +1209,7 @@ def main():
                     .configure_axis(grid=True)
                 )
 
-                st.altair_chart(ch, use_container_width=True)
+                st.altair_chart(ch, width="stretch")
 
 
 if __name__ == "__main__":
