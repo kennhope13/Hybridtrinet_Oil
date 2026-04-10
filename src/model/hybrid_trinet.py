@@ -1,5 +1,4 @@
 import math
-
 import torch
 import torch.nn as nn
 
@@ -50,7 +49,7 @@ class PosEnc(nn.Module):
         self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.pe[:, : x.size(1), :]
+        return x + self.pe[:, :x.size(1), :]
 
 
 class Patchify(nn.Module):
@@ -76,8 +75,9 @@ class HybridTriNet(nn.Module):
     def __init__(
         self,
         k: int,
-        D: int,
         H: int,
+        D_in: int,
+        D_out: int,
         d_feat: int = 96,
         kan_M: int = 8,
         kan_depth: int = 2,
@@ -94,17 +94,18 @@ class HybridTriNet(nn.Module):
     ):
         super().__init__()
         self.k = k
-        self.D = D
         self.H = H
+        self.D_in = D_in
+        self.D_out = D_out
 
-        self.kan_in = nn.Linear(k * D, D)
+        self.kan_in = nn.Linear(k * D_in, D_in)
         self.kan_blocks = nn.Sequential(
-            *[KANBlock(D, hidden=d_feat, M=kan_M, p=kan_drop) for _ in range(kan_depth)]
+            *[KANBlock(D_in, hidden=d_feat, M=kan_M, p=kan_drop) for _ in range(kan_depth)]
         )
-        self.kan_head = nn.Sequential(nn.LayerNorm(D), nn.Linear(D, d_feat))
+        self.kan_head = nn.Sequential(nn.LayerNorm(D_in), nn.Linear(D_in, d_feat))
 
         self.gru = nn.GRU(
-            D,
+            D_in,
             gru_hidden,
             num_layers=gru_layers,
             batch_first=True,
@@ -112,8 +113,9 @@ class HybridTriNet(nn.Module):
         )
         self.gru_head = nn.Sequential(nn.LayerNorm(gru_hidden), nn.Linear(gru_hidden, d_feat))
 
-        self.patch = Patchify(patch_len, stride, d_in=D, d_model=attn_dmodel)
+        self.patch = Patchify(patch_len, stride, d_in=D_in, d_model=attn_dmodel)
         self.pos = PosEnc(attn_dmodel)
+
         enc_layer = nn.TransformerEncoderLayer(
             d_model=attn_dmodel,
             nhead=attn_heads,
@@ -124,9 +126,9 @@ class HybridTriNet(nn.Module):
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=attn_layers)
         self.attn_head = nn.Sequential(nn.LayerNorm(attn_dmodel), nn.Linear(attn_dmodel, d_feat))
 
-        self.out_kan = nn.Linear(d_feat, H * D)
-        self.out_gru = nn.Linear(d_feat, H * D)
-        self.out_att = nn.Linear(d_feat, H * D)
+        self.out_kan = nn.Linear(d_feat, H * D_out)
+        self.out_gru = nn.Linear(d_feat, H * D_out)
+        self.out_att = nn.Linear(d_feat, H * D_out)
 
         self.gate = nn.Sequential(
             nn.Linear(3 * d_feat, 2 * d_feat),
@@ -150,9 +152,9 @@ class HybridTriNet(nn.Module):
         za = self.encoder(za)
         fa = self.attn_head(za.mean(1))
 
-        yk = self.out_kan(fk).view(B, self.H, self.D)
-        yg = self.out_gru(fg).view(B, self.H, self.D)
-        ya = self.out_att(fa).view(B, self.H, self.D)
+        yk = self.out_kan(fk).view(B, self.H, self.D_out)
+        yg = self.out_gru(fg).view(B, self.H, self.D_out)
+        ya = self.out_att(fa).view(B, self.H, self.D_out)
 
         fcat = torch.cat([fk, fg, fa], dim=1)
         w = self.gate(fcat).view(B, self.H, 3)

@@ -470,7 +470,6 @@ def run_forecast(
 
         model = HybridTriNet(
             k=K,
-            D=D_out,
             H=H,
             D_in=D_in,
             D_out=D_out,
@@ -488,7 +487,6 @@ def run_forecast(
             patch_len=16,
             stride=8,
         ).to(device_train)
-
         loaded = False
         if (not retrain) and ckpt_path.exists():
             try:
