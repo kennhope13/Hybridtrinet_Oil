@@ -58,7 +58,7 @@ Hỗ trợ **cập nhật dữ liệu bằng upload**, xử lý thiếu dữ li�
 ## Cài đặt
 
 ### Python
-Khuyến nghị **Python 3.10+**
+Khuyến nghị **Python 3.11.14 pip 25.2**
 
 ### Cài thư viện
 Nếu repo có `requirements.txt`:

@@ -1,10 +1,10 @@
-streamlit
-pandas
-numpy
-torch
-altair
+streamlit = 1.51.0
+pandas = 2.3.3
+numpy == 2.2.6
+torch == 2.5.1
+altair == 5.5.0
 requests
-openpyxl
-xlrd
+openpyxl == 3.1.5
+xlrd == 3.1.2
 pyyaml
-plotly
+plotly == 6.5.0
