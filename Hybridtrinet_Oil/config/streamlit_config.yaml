@@ -1,0 +1,5 @@
+default_k: 64
+default_h: 14
+default_date_col: "Ngày"
+default_h_next: 5
+default_clean_path: "data/base/root.xlsx"

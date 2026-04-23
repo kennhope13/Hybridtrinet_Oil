@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
+pandas
+numpy
+scikit-learn
+ta
+matplotlib
+plotly
+streamlit
+openpyxl
+pyarrow
+tqdm
