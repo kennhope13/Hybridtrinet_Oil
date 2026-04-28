@@ -146,6 +146,7 @@ def predict_future(model, ckpt, df: pd.DataFrame, device: str):
         pred_scaled, weights = model(x_last)   # [1, H, O, Q]
 
     pred_np = pred_scaled.cpu().numpy()[0]      # [H, O, Q]
+    pred_np = np.sort(pred_np, axis=-1)         # Đảm bảo p10 <= p50 <= p90
     results = {}
     for qi, ql in enumerate(QUANTILE_LABELS):
         p = ckpt["target_scaler"].inverse_transform(pred_np[:, :, qi])   # [H, O]
@@ -183,6 +184,7 @@ def backtest(model, ckpt, df: pd.DataFrame, device: str, n_samples: int = 200):
             pred_scaled, _ = model(x)   # [1, H, O, Q]
 
         p_np = pred_scaled.cpu().numpy()[0, 0, :, :]  # [O, Q] – h=0
+        p_np = np.sort(p_np, axis=-1)                 # Đảm bảo p10 <= p50 <= p90
 
         def inv(arr):
             return ckpt["target_scaler"].inverse_transform(arr.reshape(1, -1)).flatten()
@@ -316,6 +318,7 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .metric-card {
+
     background: linear-gradient(135deg, #1e2130 0%, #252840 100%);
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 12px;
@@ -372,8 +375,11 @@ with st.sidebar:
         st.caption("💡 Cột exogenous còn thiếu sẽ được **tự động merge** từ dữ liệu gốc của dự án.")
     st.divider()
 
-    n_hist = st.slider("📈 Số ngày lịch sử hiển thị (Future chart)", 30, 365, 90, step=10)
-    n_bt   = st.slider("🔬 Số điểm backtest (tối đa)", 50, 500, 200, step=50)
+    # Các tham số cấu hình được ẩn đi và dùng giá trị mặc định để tối giản giao diện
+    n_hist   = 90    # Số ngày lịch sử hiển thị
+    n_bt     = 200   # Số điểm backtest
+    n_future = 20    # Số ngày dự báo hiển thị mặc định
+    
     st.divider()
     st.caption("Model: **GUMNet** (CNN + GRU + WaveletKAN)")
 
@@ -490,14 +496,12 @@ st.markdown('<div class="section-header">🎯 Chọn mặt hàng cần dự báo
 
 _sel_col1, _sel_col2 = st.columns([2, 1])
 with _sel_col1:
-    selected_target = st.selectbox(
+    selected_targets = st.multiselect(
         "Chọn mặt hàng (Target)",
         options=_ckpt_targets,
-        index=0,
-        help="Chọn 1 mặt hàng model đã được huấn luyện để xem chi tiết.",
+        default=[_ckpt_targets[0]],
+        help="Chọn một hoặc nhiều mặt hàng để xem chi tiết dự báo.",
     )
-    # Gán vào list để các hàm cũ không bị lỗi logic
-    selected_targets = [selected_target]
 with _sel_col2:
     if _not_available:
         with st.expander(f"➕ {len(_not_available)} target chưa có model"):
@@ -529,16 +533,18 @@ with tab_future:
 
     # Chart mỗi target được chọn
     for col in selected_targets:
-        fig = make_future_chart(df, future_results, col, date_col, n_hist)
+        # Cắt kết quả theo n_future
+        short_future = {k: v.head(n_future) for k, v in future_results.items()}
+        fig = make_future_chart(df, short_future, col, date_col, n_hist)
         st.plotly_chart(fig, use_container_width=True)
 
     # Bảng kết quả
     st.markdown("**📋 Bảng giá dự báo (p10 | p50 | p90)**")
-    merged = future_results["p50"][[date_col]].copy()
+    merged = future_results["p50"][[date_col]].head(n_future).copy()
     for col in selected_targets:
-        merged[f"{col}_p10"] = future_results["p10"][col].values
-        merged[f"{col}_p50"] = future_results["p50"][col].values
-        merged[f"{col}_p90"] = future_results["p90"][col].values
+        merged[f"{col}_p10"] = future_results["p10"][col].head(n_future).values
+        merged[f"{col}_p50"] = future_results["p50"][col].head(n_future).values
+        merged[f"{col}_p90"] = future_results["p90"][col].head(n_future).values
 
     merged[date_col] = merged[date_col].dt.strftime("%d/%m/%Y")
     st.dataframe(merged.round(2), use_container_width=True, hide_index=True)

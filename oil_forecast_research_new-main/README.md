@@ -26,6 +26,18 @@ Dự án ứng dụng mô hình Deep Learning tiên tiến (GUMNet: kết hợp 
 
 ---
 
+## 🔍 Giải thích các chỉ số Dự báo (p10, p50, p90)
+
+Trong mô hình dự báo xác suất, chúng ta không chỉ nhận được một con số mà là một **khoảng dự báo** để quản trị rủi ro.
+
+- **p50 (Median - Trung vị):** Đây là con số dự báo chính. Có 50% khả năng giá thực tế sẽ thấp hơn mức này và 50% khả năng cao hơn. Đây là kịch bản dễ xảy ra nhất.
+- **p10 (Lower Bound - Cận dưới):** Kịch bản giá thấp. Chỉ có 10% khả năng giá thực tế thấp hơn mức này. Nếu giá rơi xuống dưới p10, đó là một sự sụt giảm bất thường.
+- **p90 (Upper Bound - Cận trên):** Kịch bản giá cao (Rủi ro tối đa). Chỉ có 10% khả năng giá thực tế vượt quá mức này. P90 giúp người quản lý chuẩn bị cho kịch bản giá tăng mạnh nhất có thể.
+
+> **Dải tin cậy:** Khoảng cách giữa p10 và p90 tạo thành một dải màu trên biểu đồ. Dải này càng hẹp thì mô hình càng tự tin, dải càng rộng thì thị trường càng biến động và rủi ro cao.
+
+---
+
 ## 📐 Các công thức đo lường độ chính xác (Metrics)
 
 Ứng dụng sử dụng 3 chỉ số phổ biến nhất để đo lường mức độ sai lệch giữa giá dự đoán và giá thực tế. 
@@ -63,6 +75,18 @@ Với một mức phân vị $q$ (ví dụ: $q = 0.9$ cho p90), và sai số $e 
 > $$L_q(y, \hat{y}) = \max(q \cdot e, (q - 1) \cdot e)$$
 
 Hệ thống sẽ tính tổng lỗi này trên cả 3 phân vị ($q \in \{0.1, 0.5, 0.9\}$) để tối ưu hóa trọng số (Gate weights) cho 3 nhánh CNN, GRU và WaveletKAN.
+
+---
+
+## 🧠 Giải thích về Gate weights (Trọng số cổng)
+
+Mô hình GUMNet sử dụng cơ chế **Gate mechanism** để kết hợp sức mạnh của 3 nhánh mạng nơ-ron khác nhau. Các trọng số này cho biết mức độ đóng góp của từng nhánh vào kết quả cuối cùng:
+
+- **CNN (Convolutional Neural Network):** Chuyên trích xuất các đặc trưng cục bộ và phát hiện các biến động ngắn hạn, các cú sốc giá đột ngột.
+- **GRU + Attention:** Chuyên xử lý các phụ thuộc dài hạn trong chuỗi thời gian và tập trung vào các thời điểm quan trọng trong quá khứ.
+- **WaveletKAN:** Sử dụng biến đổi Wavelet kết hợp mạng KAN để phân tích đa độ phân giải, giúp lọc nhiễu và làm mượt dự báo.
+
+> Hệ thống tự động học các trọng số này để tối ưu hóa dự báo dựa trên đặc điểm của từng loại dữ liệu đầu vào.
 
 ---
 

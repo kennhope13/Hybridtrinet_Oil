@@ -26,7 +26,7 @@ DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
    # đổi nếu muốn train nhiều cột
 SEQ_LEN = 30
-HORIZON = 5
+HORIZON = 20
 NUM_QUANTILES = 3
 QUANTILES = [0.1, 0.5, 0.9]
 
