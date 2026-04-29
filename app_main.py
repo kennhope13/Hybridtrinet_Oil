@@ -14,6 +14,8 @@ os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh l
 import streamlit as st
 import torch
 
+st.sidebar.info("🚀 Phiên bản: 1.0.6 - HTML Render Fix")
+
 # Hàm hiển thị DataFrame an toàn để tránh lỗi DLL Blocked (Application Control Policy)
 def safe_dataframe(df, **kwargs):
     try:
@@ -21,12 +23,12 @@ def safe_dataframe(df, **kwargs):
         st.dataframe(df, **kwargs)
     except Exception:
         try:
-            # 2. Nếu lỗi, thử hiển thị bằng table (cần pyarrow ở bản mới)
-            st.table(df)
-        except Exception:
-            # 3. GIẢI PHÁP CUỐI CÙNG: Hiển thị bằng HTML (100% an toàn, không cần DLL, không cần tabulate)
+            # 2. Nếu lỗi, thử hiển thị bằng HTML (100% an toàn, không cần DLL, không cần tabulate)
             html = df.to_html(classes='table table-striped', justify='center', border=0)
             st.write(html, unsafe_allow_html=True)
+        except Exception:
+            # 3. GIẢI PHÁP CUỐI CÙNG: Hiển thị bằng bảng cơ bản nhất
+            st.write(df)
 
 # ═══════════════════════════  CONFIG  ═════════════════════════════════════════
 ROOT = Path(__file__).resolve().parent
