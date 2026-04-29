@@ -7,6 +7,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+# ─── Cấu hình để vượt qua lỗi bảo mật DLL trên một số máy (Application Control Policy) ───
+import os
+os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh lỗi chặn DLL
+
 import streamlit as st
 import torch
 
