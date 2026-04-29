@@ -14,6 +14,15 @@ os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh l
 import streamlit as st
 import torch
 
+# Hàm hiển thị DataFrame an toàn để tránh lỗi DLL Blocked (Application Control Policy)
+def safe_dataframe(df, **kwargs):
+    try:
+        # Thử hiển thị bằng dataframe (cần pyarrow)
+        st.dataframe(df, **kwargs)
+    except Exception:
+        # Nếu bị chặn DLL hoặc thiếu thư viện, chuyển sang hiển thị bảng tĩnh (không cần pyarrow)
+        st.table(df)
+
 # ═══════════════════════════  CONFIG  ═════════════════════════════════════════
 ROOT = Path(__file__).resolve().parent
 BUILTIN_CSV = ROOT / "oil_forecast_research_new-main" / "data" / "processed" / "clean_data_exo_ver1.csv"
@@ -548,7 +557,7 @@ with t3:
         sel_up = st.selectbox("Chọn đợt upload", df_view["Upload"].unique())
         sub = df_view[df_view["Upload"] == sel_up]
         cols = [c for c in sub.columns if c != "Ngày thứ"]
-        st.dataframe(sub[cols].style.format({"Dự báo":"{:.2f}","Thực tế":"{:.2f}","Sai lệch":"{:.2f}","% Lệch":"{:.2f}%"}), use_container_width=True)
+        safe_dataframe(sub[cols].style.format({"Dự báo":"{:.2f}","Thực tế":"{:.2f}","Sai lệch":"{:.2f}","% Lệch":"{:.2f}%"}), use_container_width=True)
     else: st.info("Trống.")
 
 with t4:
@@ -570,4 +579,4 @@ with t4:
 with t5:
     if not df_view.empty:
         cols = [c for c in df_view.columns if c != "Ngày thứ"]
-        st.dataframe(df_view[cols], use_container_width=True)
+        safe_dataframe(df_view[cols], use_container_width=True)

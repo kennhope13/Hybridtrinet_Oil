@@ -31,6 +31,9 @@ echo [INFO] Dang kiem tra va cai dat thu vien...
 "venv\Scripts\python.exe" -m pip install --upgrade pip
 "venv\Scripts\python.exe" -m pip install -r requirements.txt
 
+:: Go bo PyArrow neu co de tranh loi DLL Blocked tren mot so may
+"venv\Scripts\python.exe" -m pip uninstall -y pyarrow >nul 2>&1
+
 :: 3. Chay ung dung Streamlit
 echo [INFO] Dang chay ung dung...
 "venv\Scripts\python.exe" -m streamlit run app_main.py --server.port 8502
