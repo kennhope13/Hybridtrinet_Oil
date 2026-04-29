@@ -1,0 +1,28 @@
+{
+  "feature_cols": [
+    "Unnamed: 0",
+    "BRT DTD",
+    "BRT KH",
+    "WTI",
+    "NgayTrongTuan",
+    "ThangTrongNam",
+    "QuyTrongNam",
+    "Nam",
+    "NgayLe",
+    "SuKienDacBiet",
+    "USD_Index",
+    "GPRD",
+    "MG95",
+    "MG92",
+    "DO 0.001%",
+    "DO 0.05%"
+  ],
+  "tgt_idx": [
+    12,
+    13,
+    14,
+    15
+  ],
+  "K": 64,
+  "H": 5
+}

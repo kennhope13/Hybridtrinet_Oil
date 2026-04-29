@@ -1,0 +1,346 @@
+{
+  "gumnet": {
+    "cnn.weight": [
+      64,
+      17,
+      3
+    ],
+    "cnn.bias": [
+      64
+    ],
+    "gru.weight_ih_l0": [
+      192,
+      17
+    ],
+    "gru.weight_hh_l0": [
+      192,
+      64
+    ],
+    "gru.bias_ih_l0": [
+      192
+    ],
+    "gru.bias_hh_l0": [
+      192
+    ],
+    "gru.weight_ih_l1": [
+      192,
+      64
+    ],
+    "gru.weight_hh_l1": [
+      192,
+      64
+    ],
+    "gru.bias_ih_l1": [
+      192
+    ],
+    "gru.bias_hh_l1": [
+      192
+    ],
+    "attention.in_proj_weight": [
+      192,
+      64
+    ],
+    "attention.in_proj_bias": [
+      192
+    ],
+    "attention.out_proj.weight": [
+      64,
+      64
+    ],
+    "attention.out_proj.bias": [
+      64
+    ],
+    "kan.scale": [
+      1,
+      1,
+      17
+    ],
+    "kan.translation": [
+      1,
+      1,
+      17
+    ],
+    "kan.weight1.weight": [
+      64,
+      17
+    ],
+    "kan.weight1.bias": [
+      64
+    ],
+    "kan.weight2.weight": [
+      64,
+      17
+    ],
+    "kan.weight2.bias": [
+      64
+    ],
+    "gate.0.weight": [
+      32,
+      192
+    ],
+    "gate.0.bias": [
+      32
+    ],
+    "gate.2.weight": [
+      3,
+      32
+    ],
+    "gate.2.bias": [
+      3
+    ],
+    "out_layer.weight": [
+      240,
+      64
+    ],
+    "out_layer.bias": [
+      240
+    ]
+  },
+  "hybrid": {
+    "kan_in.weight": [
+      16,
+      1024
+    ],
+    "kan_in.bias": [
+      16
+    ],
+    "kan_blocks.0.rbfe.centers": [
+      16,
+      8
+    ],
+    "kan_blocks.0.rbfe.gamma": [
+      16,
+      8
+    ],
+    "kan_blocks.0.lin1.weight": [
+      96,
+      128
+    ],
+    "kan_blocks.0.lin1.bias": [
+      96
+    ],
+    "kan_blocks.0.lin2.weight": [
+      16,
+      96
+    ],
+    "kan_blocks.0.lin2.bias": [
+      16
+    ],
+    "kan_blocks.0.proj.weight": [
+      16,
+      16
+    ],
+    "kan_blocks.0.proj.bias": [
+      16
+    ],
+    "kan_blocks.1.rbfe.centers": [
+      16,
+      8
+    ],
+    "kan_blocks.1.rbfe.gamma": [
+      16,
+      8
+    ],
+    "kan_blocks.1.lin1.weight": [
+      96,
+      128
+    ],
+    "kan_blocks.1.lin1.bias": [
+      96
+    ],
+    "kan_blocks.1.lin2.weight": [
+      16,
+      96
+    ],
+    "kan_blocks.1.lin2.bias": [
+      16
+    ],
+    "kan_blocks.1.proj.weight": [
+      16,
+      16
+    ],
+    "kan_blocks.1.proj.bias": [
+      16
+    ],
+    "kan_head.0.weight": [
+      16
+    ],
+    "kan_head.0.bias": [
+      16
+    ],
+    "kan_head.1.weight": [
+      96,
+      16
+    ],
+    "kan_head.1.bias": [
+      96
+    ],
+    "gru.weight_ih_l0": [
+      384,
+      16
+    ],
+    "gru.weight_hh_l0": [
+      384,
+      128
+    ],
+    "gru.bias_ih_l0": [
+      384
+    ],
+    "gru.bias_hh_l0": [
+      384
+    ],
+    "gru_head.0.weight": [
+      128
+    ],
+    "gru_head.0.bias": [
+      128
+    ],
+    "gru_head.1.weight": [
+      96,
+      128
+    ],
+    "gru_head.1.bias": [
+      96
+    ],
+    "patch.proj.weight": [
+      64,
+      256
+    ],
+    "patch.proj.bias": [
+      64
+    ],
+    "pos.pe": [
+      1,
+      4096,
+      64
+    ],
+    "encoder.layers.0.self_attn.in_proj_weight": [
+      192,
+      64
+    ],
+    "encoder.layers.0.self_attn.in_proj_bias": [
+      192
+    ],
+    "encoder.layers.0.self_attn.out_proj.weight": [
+      64,
+      64
+    ],
+    "encoder.layers.0.self_attn.out_proj.bias": [
+      64
+    ],
+    "encoder.layers.0.linear1.weight": [
+      256,
+      64
+    ],
+    "encoder.layers.0.linear1.bias": [
+      256
+    ],
+    "encoder.layers.0.linear2.weight": [
+      64,
+      256
+    ],
+    "encoder.layers.0.linear2.bias": [
+      64
+    ],
+    "encoder.layers.0.norm1.weight": [
+      64
+    ],
+    "encoder.layers.0.norm1.bias": [
+      64
+    ],
+    "encoder.layers.0.norm2.weight": [
+      64
+    ],
+    "encoder.layers.0.norm2.bias": [
+      64
+    ],
+    "encoder.layers.1.self_attn.in_proj_weight": [
+      192,
+      64
+    ],
+    "encoder.layers.1.self_attn.in_proj_bias": [
+      192
+    ],
+    "encoder.layers.1.self_attn.out_proj.weight": [
+      64,
+      64
+    ],
+    "encoder.layers.1.self_attn.out_proj.bias": [
+      64
+    ],
+    "encoder.layers.1.linear1.weight": [
+      256,
+      64
+    ],
+    "encoder.layers.1.linear1.bias": [
+      256
+    ],
+    "encoder.layers.1.linear2.weight": [
+      64,
+      256
+    ],
+    "encoder.layers.1.linear2.bias": [
+      64
+    ],
+    "encoder.layers.1.norm1.weight": [
+      64
+    ],
+    "encoder.layers.1.norm1.bias": [
+      64
+    ],
+    "encoder.layers.1.norm2.weight": [
+      64
+    ],
+    "encoder.layers.1.norm2.bias": [
+      64
+    ],
+    "attn_head.0.weight": [
+      64
+    ],
+    "attn_head.0.bias": [
+      64
+    ],
+    "attn_head.1.weight": [
+      96,
+      64
+    ],
+    "attn_head.1.bias": [
+      96
+    ],
+    "out_kan.weight": [
+      20,
+      96
+    ],
+    "out_kan.bias": [
+      20
+    ],
+    "out_gru.weight": [
+      20,
+      96
+    ],
+    "out_gru.bias": [
+      20
+    ],
+    "out_att.weight": [
+      20,
+      96
+    ],
+    "out_att.bias": [
+      20
+    ],
+    "gate.0.weight": [
+      192,
+      288
+    ],
+    "gate.0.bias": [
+      192
+    ],
+    "gate.3.weight": [
+      15,
+      192
+    ],
+    "gate.3.bias": [
+      15
+    ]
+  }
+}
