@@ -1,42 +1,32 @@
 @echo off
-title Oil Forecast Evaluation Hub
+setlocal
+
 echo ======================================================
 echo           OIL FORECAST - AUTOMATED HUB
 echo ======================================================
 echo.
 
-:: 1. Kiem tra va tao Moi truong ao (Virtual Environment) de tranh xung dot
-set VENV_PATH=%~dp0venv
-if not exist "%VENV_PATH%" (
-    echo [!] Dang khoi tao moi truong co lap (Virtual Environment)...
-    echo     (Viec nay giup tranh xung dot voi cac phan mem khac tren may ban)
-    python -m venv venv
+:: Chuyen den thu muc chua file bat
+cd /d "%~dp0"
+
+:: 1. Tao moi truong ao neu chua ton tai (Su dung Python 3.11)
+if not exist "venv\Scripts\python.exe" (
+    echo [INFO] Dang tao moi truong ao (venv) voi Python 3.11...
+    py -3.11 -m venv venv
     if %errorlevel% neq 0 (
-        echo [X] LOI: Khong the khoi tao moi truong ao. Vui long kiem tra lai Python.
+        echo [ERROR] Khong the tao venv. Vui long kiem tra xem may da cai Python 3.11 chua.
         pause
         exit /b
     )
-    echo [OK] Da tao xong moi truong co lap.
 )
 
-:: 2. Kich hoat moi truong ao
-echo [*] Dang kich hoat moi truong...
-call "%VENV_PATH%\Scripts\activate"
+:: 2. Cap nhat pip va cai dat thu vien
+echo [INFO] Dang kiem tra va cai dat thu vien...
+"venv\Scripts\python.exe" -m pip install --upgrade pip
+"venv\Scripts\python.exe" -m pip install -r requirements.txt
 
-:: 3. Tu dong cap nhat va sua loi thu vien
-echo [*] Dang kiem tra va tu dong sua loi thu vien (neu co)...
-python -m pip install --upgrade pip >nul
-pip install -r requirements.txt --quiet
-if %errorlevel% neq 0 (
-    echo [X] LOI: Khong the cap nhat thu vien. Vui long kiem tra ket noi mang.
-    pause
-    exit /b
-)
+:: 3. Chay ung dung Streamlit
+echo [INFO] Dang chay ung dung...
+"venv\Scripts\python.exe" -m streamlit run app_main.py --server.port 8502
 
-echo.
-echo [OK] MOI TRUONG DA SAN SANG! 
-echo     (Moi thu vien da duoc co lap, khong lo xung dot)
-echo.
-echo 4. Dang khoi dong ung dung...
-streamlit run app_main.py --server.port 8502
 pause
