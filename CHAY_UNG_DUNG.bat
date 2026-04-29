@@ -9,6 +9,12 @@ echo.
 :: Chuyen den thu muc chua file bat
 cd /d "%~dp0"
 
+:: Khoi tao file log neu chua co
+if not exist "sim_log.txt" (
+    echo [INFO] Khoi tao file nhat ky sim_log.txt...
+    echo === NHAT KY MO PHONG GIA DAU === > sim_log.txt
+)
+
 :: 1. Tao moi truong ao neu chua ton tai (Su dung Python 3.11)
 if not exist "venv\Scripts\python.exe" (
     echo [INFO] Dang tao moi truong ao (venv) voi Python 3.11...
