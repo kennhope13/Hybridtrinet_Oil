@@ -17,18 +17,16 @@ import torch
 # Hàm hiển thị DataFrame an toàn để tránh lỗi DLL Blocked (Application Control Policy)
 def safe_dataframe(df, **kwargs):
     try:
-        # Thử hiển thị bằng dataframe (cần pyarrow)
+        # 1. Thử hiển thị bằng dataframe (đẹp nhất, cần pyarrow)
         st.dataframe(df, **kwargs)
     except Exception:
         try:
-            # Nếu lỗi, thử hiển thị bằng table (cũng có thể cần pyarrow ở bản mới)
+            # 2. Nếu lỗi, thử hiển thị bằng table (cần pyarrow ở bản mới)
             st.table(df)
         except Exception:
-            # GIẢI PHÁP CUỐI: Hiển thị bằng Markdown (100% an toàn, không cần DLL)
-            if hasattr(df, "to_markdown"):
-                st.markdown(df.to_markdown())
-            else:
-                st.write(df)
+            # 3. GIẢI PHÁP CUỐI CÙNG: Hiển thị bằng HTML (100% an toàn, không cần DLL, không cần tabulate)
+            html = df.to_html(classes='table table-striped', justify='center', border=0)
+            st.write(html, unsafe_allow_html=True)
 
 # ═══════════════════════════  CONFIG  ═════════════════════════════════════════
 ROOT = Path(__file__).resolve().parent
