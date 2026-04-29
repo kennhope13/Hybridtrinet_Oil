@@ -20,8 +20,15 @@ def safe_dataframe(df, **kwargs):
         # Thử hiển thị bằng dataframe (cần pyarrow)
         st.dataframe(df, **kwargs)
     except Exception:
-        # Nếu bị chặn DLL hoặc thiếu thư viện, chuyển sang hiển thị bảng tĩnh (không cần pyarrow)
-        st.table(df)
+        try:
+            # Nếu lỗi, thử hiển thị bằng table (cũng có thể cần pyarrow ở bản mới)
+            st.table(df)
+        except Exception:
+            # GIẢI PHÁP CUỐI: Hiển thị bằng Markdown (100% an toàn, không cần DLL)
+            if hasattr(df, "to_markdown"):
+                st.markdown(df.to_markdown())
+            else:
+                st.write(df)
 
 # ═══════════════════════════  CONFIG  ═════════════════════════════════════════
 ROOT = Path(__file__).resolve().parent
@@ -360,7 +367,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                 except: continue
             
             if all_preds:
-                st.table(pd.DataFrame(all_preds).set_index("Horizon"))
+                safe_dataframe(pd.DataFrame(all_preds).set_index("Horizon"))
                 
             # Vẽ biểu đồ so sánh TẤT CẢ lộ trình
             st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
@@ -498,7 +505,7 @@ with t2:
         st.subheader("MAPE (%) trung bình")
         mape_piv = df_view.groupby(["Model", "Horizon"])["% Lệch"].mean().unstack().round(2)
         mape_piv = mape_piv[[c for c in h_order if c in mape_piv.columns]]
-        st.table(mape_piv)
+        safe_dataframe(mape_piv)
         
         # HỆ THỐNG CẢNH BÁO THÔNG MINH
         avg_mape = mape_piv.mean().mean()
