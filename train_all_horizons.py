@@ -29,12 +29,12 @@ HORIZONS = [1, 5, 10, 30, 60, 100]
 # ─── Config ───
 GUMNET_SEQ_LEN = 30
 GUMNET_EPOCHS  = 150
-GUMNET_LR      = 1e-3
+GUMNET_LR      = 2e-4  # Giảm LR để Finetune ổn định hơn
 GUMNET_BATCH   = 32
 
 HYBRID_SEQ_LEN = 64
 HYBRID_EPOCHS  = 200
-HYBRID_LR      = 1e-3
+HYBRID_LR      = 2e-4  # Giảm LR để Finetune ổn định hơn
 HYBRID_BATCH   = 32
 
 VAL_RATIO = 0.2
@@ -145,7 +145,19 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
         d_feat=64, num_quantiles=3,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=GUMNET_LR)
+    # Nạp checkpoint cũ nếu có để Finetune
+    ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
+    current_lr = GUMNET_LR
+    if ckpt_path.exists():
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            current_lr = GUMNET_LR * 0.2 # Giảm LR để học tinh chỉnh
+            flush_print(f"   ♻️ Đã nạp GUMNet h{horizon} để học tiếp (Finetune)...")
+        except:
+            flush_print(f"   ⚠️ Không thể nạp checkpoint GUMNet h{horizon}, sẽ học mới.")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=current_lr)
     quantiles = [0.1, 0.5, 0.9]
 
     def q_loss(pred, target):
@@ -273,9 +285,20 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
         patch_len=16, stride=8,
     ).to(device)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=HYBRID_LR, weight_decay=1e-4)
+    # Nạp checkpoint cũ nếu có để Finetune
+    ckpt_path = OUT_DIR / f"hybrid_h{horizon}.pt"
+    current_lr = HYBRID_LR
+    if ckpt_path.exists():
+        try:
+            model.load_state_dict(torch.load(ckpt_path, map_location=device))
+            current_lr = HYBRID_LR * 0.2
+            flush_print(f"   ♻️ Đã nạp Hybrid h{horizon} để học tiếp (Finetune)...")
+        except:
+            flush_print(f"   ⚠️ Không thể nạp checkpoint Hybrid h{horizon}, sẽ học mới.")
+
+    opt = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=HYBRID_LR,
+        opt, max_lr=current_lr * 2,
         total_steps=max(1, n_epochs * len(tr_loader)),
         pct_start=0.15,
     )
