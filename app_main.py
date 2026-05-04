@@ -317,12 +317,22 @@ def show_live_forecasts(base_full, file_paths, sel_models):
         st.warning("⚠️ Chưa có file upload để lấy dữ liệu mới nhất.")
         return
 
+    # Lấy ngày lớn nhất từ các file upload
+    upload_dfs = []
+    for fp in file_paths:
+        upload_dfs.append(load_df(fp))
+    
+    upload_max_date = pd.concat(upload_dfs)[DATE_COL].max() if upload_dfs else base_full[DATE_COL].max()
+
     # Tổng hợp dữ liệu mới nhất
     latest_df = base_full.copy()
-    for fp in file_paths:
-        fdf = load_df(fp)
+    for fdf in upload_dfs:
         latest_df = pd.concat([latest_df, fdf])
+        
     latest_df = latest_df.drop_duplicates(DATE_COL).sort_values(DATE_COL).reset_index(drop=True)
+    
+    # CẮT DỮ LIỆU ĐẾN NGÀY UPLOAD CUỐI CÙNG (Để dự báo từ mốc file upload)
+    latest_df = latest_df[latest_df[DATE_COL] <= upload_max_date]
     
     history = latest_df.tail(500)
     last_date = history[DATE_COL].iloc[-1]
