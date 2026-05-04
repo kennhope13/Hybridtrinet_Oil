@@ -288,10 +288,11 @@ def run_upload_simulation(base_path, upload_files, start_date):
                                 idx_h = min(h - 1, len(full_pred) - 1)
                                 p_row = full_pred.iloc[idx_h]
                                 
-                                # Tìm thực tế tương ứng ngày dự báo của mô hình
+                                # Tìm thực tế tương ứng ngày dự báo của mô hình (Khớp chính xác tuyệt đối)
                                 diff = (actual_pool[DATE_COL] - p_row[DATE_COL]).dt.days.abs()
-                                if not diff.empty and diff.min() <= 3:
+                                if not diff.empty and diff.min() == 0:
                                     a_row = actual_pool.loc[diff.idxmin()]
+
                                     for tgt in avail_tgt:
                                         if tgt in p_row and tgt in a_row and pd.notna(a_row[tgt]):
                                             match_data.append({
@@ -584,19 +585,26 @@ with t2:
                 st.rerun()
 
     if not df_view.empty:
-
         h_order = [f"{h}d" for h in HORIZONS]
-        st.subheader("MAE trung bình")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("📊 MAPE (%) theo Mốc")
+            mape_h = df_view.groupby(["Model", "Horizon"])["% Lệch"].mean().unstack().round(2)
+            mape_h = mape_h[[c for c in h_order if c in mape_h.columns]]
+            st.dataframe(mape_h.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
+        with col_b:
+            st.subheader("🛢️ MAPE (%) theo Mặt hàng")
+            mape_t = df_view.groupby(["Model", "Target"])["% Lệch"].mean().unstack().round(2)
+            st.dataframe(mape_t.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
+
+        st.subheader("📋 Chi tiết sai lệch MAE")
         mae_piv = df_view.groupby(["Model", "Horizon"])["Sai lệch"].mean().unstack().round(2)
         mae_piv = mae_piv[[c for c in h_order if c in mae_piv.columns]]
-        st.dataframe(mae_piv.style.highlight_min(axis=0, color="#00d4aa40"), use_container_width=True)
-        st.subheader("MAPE (%) trung bình")
-        mape_piv = df_view.groupby(["Model", "Horizon"])["% Lệch"].mean().unstack().round(2)
-        mape_piv = mape_piv[[c for c in h_order if c in mape_piv.columns]]
-        safe_dataframe(mape_piv)
+        st.dataframe(mae_piv, use_container_width=True)
         
         # HỆ THỐNG CẢNH BÁO THÔNG MINH
-        avg_mape = mape_piv.mean().mean()
+        avg_mape = df_view["% Lệch"].mean()
+
         if avg_mape > 10.0:
             st.error(f"### ⚠️ CẢNH BÁO ĐỘ CHÍNH XÁC (MAPE: {avg_mape:.2f}%)")
             st.markdown(f"""
