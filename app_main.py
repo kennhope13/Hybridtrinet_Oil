@@ -334,6 +334,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
         with tabs[idx]:
             all_preds = []
             future_points = [] # Dùng cho biểu đồ xu hướng
+            detailed_preds = {} # Lưu dự báo chi tiết
             
             # Lấy giá hiện tại làm mốc 0
             last_prices = history.iloc[-1]
@@ -369,7 +370,6 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                             all_preds.append(row)
                             
                             # Lưu trữ dự báo chi tiết
-                            if 'detailed_preds' not in locals(): detailed_preds = {}
                             detailed_preds[h] = pred.copy()
 
                 except: continue
@@ -380,7 +380,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                 
                 st.markdown("#### Chi tiết từng ngày trong mốc")
                 sel_h = st.selectbox(f"Chọn mốc để xem chi tiết ({mname})", HORIZONS, format_func=lambda x: f"{x} ngày")
-                if 'detailed_preds' in locals() and sel_h in detailed_preds:
+                if sel_h in detailed_preds:
                     df_detail = detailed_preds[sel_h].copy()
                     if DATE_COL in df_detail.columns:
                         df_detail["Ngày"] = df_detail[DATE_COL].dt.strftime('%d/%m/%Y')
