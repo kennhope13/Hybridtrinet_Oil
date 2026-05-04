@@ -383,8 +383,8 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                 if sel_h in detailed_preds:
                     df_detail = detailed_preds[sel_h].copy()
                     if DATE_COL in df_detail.columns:
-                        df_detail["Ngày"] = df_detail[DATE_COL].dt.strftime('%d/%m/%Y')
-                        df_detail = df_detail.set_index("Ngày").drop(columns=[DATE_COL])
+                        df_detail[DATE_COL] = df_detail[DATE_COL].dt.strftime('%d/%m/%Y')
+                        df_detail = df_detail.set_index(DATE_COL)
                     safe_dataframe(df_detail)
                 
             # Vẽ biểu đồ so sánh TẤT CẢ lộ trình
