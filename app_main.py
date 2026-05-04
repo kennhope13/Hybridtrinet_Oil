@@ -514,14 +514,36 @@ with t1:
     show_live_forecasts(base_full_orig, file_paths, sel_models)
     
     st.subheader("⬆️ Upload file mới")
+    auto_ft = st.checkbox("🔄 Tự động Huấn luyện lại (Finetune) ngay sau khi tải file lên (Khuyến nghị bật, mất ~5 phút)", value=True)
     up = st.file_uploader("Chọn file Excel/CSV", type=["xlsx", "xls", "csv"])
     if up:
         tmp = ROOT / "datasets" / up.name
         with open(tmp, "wb") as f: f.write(up.getbuffer())
-        st.success(f"✅ Đã lưu: {up.name}. F5 để cập nhật lịch sử.")
+        st.success(f"✅ Đã lưu: {up.name}")
         df_new = load_df(tmp)
         if not df_new.empty:
             st.info(f"📅 Dữ liệu mới nhất đến: {df_new[DATE_COL].max().strftime('%d/%m/%Y')}")
+            
+        if auto_ft:
+            st.warning("⏳ Đang TỰ ĐỘNG Finetune (80 Epochs)... Vui lòng KHÔNG đóng trang này!")
+            log_area = st.empty()
+            import subprocess
+            cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "80"]
+            try:
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                log_text = ""
+                for line in process.stdout:
+                    log_text += line
+                    log_area.code("\n".join(log_text.splitlines()[-15:]))
+                process.wait()
+                if process.returncode == 0:
+                    st.success("✅ TỰ ĐỘNG FINETUNE THÀNH CÔNG! Đang cập nhật bảng dự báo...")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("❌ Có lỗi xảy ra khi tự động Finetune.")
+            except Exception as e:
+                st.error(f"Lỗi: {e}")
 
 with t2:
     if not df_view.empty:
