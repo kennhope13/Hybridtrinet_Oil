@@ -439,7 +439,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
 st.set_page_config(page_title="Oil Forecast Hub", layout="wide", page_icon="🛢️")
 st.markdown("<style>.block-container { padding-top: 1rem; } h1 { background: linear-gradient(135deg, #00d4aa, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }</style>", unsafe_allow_html=True)
 st.title("🛢️ Oil Forecast – Automated Evaluation Hub")
-st.info("💡 Lưu ý: MG97 được sử dụng làm biến tham chiếu đầu vào (Feature) để tăng độ chính xác, hiện tại chưa có mô hình dự báo riêng cho mặt hàng này.")
+
 
 # Lưu base_full gốc để dùng cho live forecast
 base_full_orig = load_df(BUILTIN_CSV)
