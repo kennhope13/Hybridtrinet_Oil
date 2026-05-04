@@ -525,11 +525,14 @@ with t1:
             st.info(f"📅 Dữ liệu mới nhất đến: {df_new[DATE_COL].max().strftime('%d/%m/%Y')}")
             
         if auto_ft:
-            st.warning("⏳ Đang TỰ ĐỘNG phân tích dữ liệu và khởi tạo Dự báo... Vui lòng KHÔNG đóng trang này!")
-            log_area = st.empty()
-            import subprocess
-            cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "80"]
-            try:
+            if not sel_models:
+                st.error("❌ Vui lòng chọn ít nhất một mô hình ở thanh bên trái để phân tích!")
+            else:
+                st.warning(f"⏳ Đang TỰ ĐỘNG phân tích dữ liệu cho {', '.join(sel_models)}... Vui lòng KHÔNG đóng trang này!")
+                log_area = st.empty()
+                import subprocess
+                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "80", "--models"] + sel_models
+                try:
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
                 log_text = ""
                 for line in process.stdout:
@@ -583,14 +586,17 @@ with t2:
             n_epochs = st.number_input("Số vòng lặp (Epochs) huấn luyện thêm", min_value=1, max_value=200, value=20)
             
             if st.button("🚀 Bắt đầu Finetune Ngay"):
-                log_area = st.empty()
-                log_text = "🛠️ Đang chuẩn bị môi trường...\n"
-                log_area.code(log_text)
-                
-                import subprocess
-                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs)]
-                
-                try:
+                if not sel_models:
+                    st.error("❌ Vui lòng chọn ít nhất một mô hình ở thanh bên trái!")
+                else:
+                    log_area = st.empty()
+                    log_text = f"🛠️ Đang chuẩn bị môi trường cho {', '.join(sel_models)}...\n"
+                    log_area.code(log_text)
+                    
+                    import subprocess
+                    cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models
+                    
+                    try:
                     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
                     
                     for line in process.stdout:

@@ -50,6 +50,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--update_data", action="store_true", help="Cập nhật dữ liệu từ thư mục datasets vào CSV gốc")
     parser.add_argument("--epochs", type=int, default=None, help="Số epoch huấn luyện (mặc định lấy theo config)")
+    parser.add_argument("--models", nargs="+", default=["HybridTriNet", "GUMNet"], help="Danh sách mô hình cần train")
     return parser.parse_args()
 
 def update_training_data():
@@ -388,11 +389,14 @@ if __name__ == "__main__":
         flush_print(f"📅 CHÂN TRỜI DỰ BÁO: {h} NGÀY")
         flush_print(f"{'='*40}")
         
-        flush_print(f"🧠 [GUMNet] Đang huấn luyện...")
-        train_gumnet_horizon(df, h, device, epochs=args.epochs)
-        
-        flush_print(f"🧬 [HybridTriNet] Đang huấn luyện...")
-        train_hybrid_horizon(df, h, device, epochs=args.epochs)
+        if "GUMNet" in args.models:
+            flush_print(f"🧠 [GUMNet] Đang huấn luyện...")
+            train_gumnet_horizon(df, h, device, epochs=args.epochs)
+            
+        if "HybridTriNet" in args.models:
+            flush_print(f"🧬 [HybridTriNet] Đang huấn luyện...")
+            train_hybrid_horizon(df, h, device, epochs=args.epochs)
+
     
     flush_print("\n✅ TẤT CẢ MÔ HÌNH ĐÃ ĐƯỢC HUẤN LUYỆN LẠI THÀNH CÔNG!")
     print(f"Checkpoints đã lưu tại: {OUT_DIR}")
