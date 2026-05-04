@@ -356,21 +356,36 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                         pred = predict_from_df(model, meta, history_enriched, device)
                         
                         if not pred.empty:
-                            f_date = last_date + pd.Timedelta(days=h)
+                            f_date = pred[DATE_COL].iloc[-1] if DATE_COL in pred.columns else last_date + pd.Timedelta(days=h)
                             row = {
                                 "Ngày dự đoán": f_date.strftime('%d/%m/%Y'),
                                 "Mốc (Horizon)": f"+{h} ngày"
                             }
                             for tgt in TARGET_COLS:
-                                val = float(pred.iloc[0][tgt])
+                                val = float(pred.iloc[-1][tgt]) # Lấy điểm t+h
                                 row[tgt] = f"{val:,.0f}"
                                 # Thêm điểm vào biểu đồ (chỉ lấy điểm cuối của horizon)
                                 future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
                             all_preds.append(row)
+                            
+                            # Lưu trữ dự báo chi tiết
+                            if 'detailed_preds' not in locals(): detailed_preds = {}
+                            detailed_preds[h] = pred.copy()
+
                 except: continue
             
             if all_preds:
+                st.markdown("#### Tóm tắt các mốc (Điểm cuối cùng)")
                 safe_dataframe(pd.DataFrame(all_preds).set_index("Ngày dự đoán"))
+                
+                st.markdown("#### Chi tiết từng ngày trong mốc")
+                sel_h = st.selectbox(f"Chọn mốc để xem chi tiết ({mname})", HORIZONS, format_func=lambda x: f"{x} ngày")
+                if 'detailed_preds' in locals() and sel_h in detailed_preds:
+                    df_detail = detailed_preds[sel_h].copy()
+                    if DATE_COL in df_detail.columns:
+                        df_detail["Ngày"] = df_detail[DATE_COL].dt.strftime('%d/%m/%Y')
+                        df_detail = df_detail.set_index("Ngày").drop(columns=[DATE_COL])
+                    safe_dataframe(df_detail)
                 
             # Vẽ biểu đồ so sánh TẤT CẢ lộ trình
             st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
