@@ -342,7 +342,16 @@ def show_live_forecasts(base_full, file_paths, sel_models):
     history = latest_df.tail(500)
     last_date = history[DATE_COL].iloc[-1]
     
-    st.markdown(f"### 🔮 Bảng dự báo đa mốc thời gian (Từ mốc: **{last_date.strftime('%d/%m/%Y')}**)")
+    # Tìm xem ngày này thuộc file nào để báo cho người dùng
+    source_file = "Dataset gốc"
+    for f in file_info:
+        if f["max_date"] == last_date:
+            source_file = f["name"]
+            break
+            
+    st.markdown(f"### 🔮 Bảng dự báo (Từ mốc: **{last_date.strftime('%d/%m/%Y')}**)")
+    st.caption(f"📌 Nguồn dữ liệu mốc: **{source_file}**")
+
     
     tabs = st.tabs(sel_models)
     for idx, mname in enumerate(sel_models):
