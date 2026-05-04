@@ -14,7 +14,7 @@ os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh l
 import streamlit as st
 import torch
 
-st.sidebar.info("🚀 Phiên bản: 1.0.6 - HTML Render Fix")
+# st.sidebar.info("🚀 Phiên bản: 1.0.6 - HTML Render Fix")
 
 # Hàm hiển thị DataFrame an toàn để tránh lỗi DLL Blocked (Application Control Policy)
 def safe_dataframe(df, **kwargs):
@@ -356,12 +356,12 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                         pred = predict_from_df(model, meta, history_enriched, device)
                         
                         if not pred.empty:
-                            row = {"Horizon": f"{h} ngày"}
+                            f_date = last_date + pd.Timedelta(days=h)
+                            row = {"Horizon": f"{h} ngày ({f_date.strftime('%d/%m/%Y')})"}
                             for tgt in TARGET_COLS:
                                 val = float(pred.iloc[0][tgt])
                                 row[tgt] = f"{val:,.0f}"
                                 # Thêm điểm vào biểu đồ (chỉ lấy điểm cuối của horizon)
-                                f_date = last_date + pd.Timedelta(days=h)
                                 future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
                             all_preds.append(row)
                 except: continue
