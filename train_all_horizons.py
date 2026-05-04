@@ -51,6 +51,7 @@ def parse_args():
     parser.add_argument("--update_data", action="store_true", help="Cập nhật dữ liệu từ thư mục datasets vào CSV gốc")
     parser.add_argument("--epochs", type=int, default=None, help="Số epoch huấn luyện (mặc định lấy theo config)")
     parser.add_argument("--models", nargs="+", default=["HybridTriNet", "GUMNet"], help="Danh sách mô hình cần train")
+    parser.add_argument("--horizons", nargs="+", type=int, default=HORIZONS, help="Danh sách chân trời cần train (vd: 1 5 100)")
     return parser.parse_args()
 
 def update_training_data():
@@ -170,6 +171,8 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
 
     best_val = float("inf")
     ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
+    patience = 15
+    wait = 0
 
     for epoch in range(n_epochs):
         model.train()
@@ -195,10 +198,11 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
         vl = np.mean(v_losses) if v_losses else float("inf")
         
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"    Epoch {epoch+1}/{GUMNET_EPOCHS}  train={tl:.6f}  val={vl:.6f}")
+            print(f"    Epoch {epoch+1}/{n_epochs}  train={tl:.6f}  val={vl:.6f}")
 
         if vl < best_val:
             best_val = vl
+            wait = 0
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "seq_len": GUMNET_SEQ_LEN, "horizon": horizon,
@@ -209,8 +213,13 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
                 "target_scaler": processor.target_scaler,
                 "date_col": DATE_COL, "d_feat": 64,
             }, ckpt_path)
+        else:
+            wait += 1
+            if wait >= patience:
+                print(f"    [Early Stopping] Dừng tại epoch {epoch+1} do không cải thiện.")
+                break
 
-    print(f"    Saved: {ckpt_path}  (best_val={best_val:.6f})")
+    print(f"    Best Val Loss: {best_val:.6f}")
 
 # ═══════════════════════  HybridTriNet TRAINING  ══════════════════════════════
 
@@ -384,7 +393,7 @@ if __name__ == "__main__":
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
     # 3. Huấn luyện lần lượt từng chân trời
-    for h in HORIZONS:
+    for h in args.horizons:
         flush_print(f"\n{'='*40}")
         flush_print(f"📅 CHÂN TRỜI DỰ BÁO: {h} NGÀY")
         flush_print(f"{'='*40}")

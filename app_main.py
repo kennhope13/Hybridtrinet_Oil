@@ -528,10 +528,13 @@ with t1:
             if not sel_models:
                 st.error("❌ Vui lòng chọn ít nhất một mô hình ở thanh bên trái để phân tích!")
             else:
-                st.warning(f"⏳ Đang TỰ ĐỘNG phân tích dữ liệu cho {', '.join(sel_models)}... Vui lòng KHÔNG đóng trang này!")
+                # Mặc định auto-finetune các mốc ngắn (1d, 5d) để cực nhanh, hoặc tất cả nếu muốn
+                sel_hz = [1, 5] 
+                st.warning(f"⏳ Đang TỰ ĐỘNG phân tích dữ liệu cho {', '.join(sel_models)} (Mốc: {', '.join([str(x)+'d' for x in sel_hz])})...")
                 log_area = st.empty()
                 import subprocess
-                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "80", "--models"] + sel_models
+                # Giảm epoch xuống 50 cho auto-finetune để nhanh hơn nữa
+                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "50", "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz]
                 try:
                     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
                     log_text = ""
@@ -583,18 +586,21 @@ with t2:
             - Thời gian xử lý: **5 - 15 phút**. Vui lòng không tắt ứng dụng trong lúc chạy.
             """)
             
-            n_epochs = st.number_input("Số vòng lặp (Epochs) huấn luyện thêm", min_value=1, max_value=200, value=20)
+            n_epochs = st.number_input("Số vòng lặp (Epochs) huấn luyện thêm", min_value=1, max_value=200, value=50)
+            sel_hz_manual = st.multiselect("Chọn các mốc thời gian cần cập nhật", HORIZONS, default=[1, 5, 10, 30])
             
             if st.button("🚀 Bắt đầu Finetune Ngay"):
                 if not sel_models:
                     st.error("❌ Vui lòng chọn ít nhất một mô hình ở thanh bên trái!")
+                elif not sel_hz_manual:
+                    st.error("❌ Vui lòng chọn ít nhất một mốc thời gian!")
                 else:
                     log_area = st.empty()
-                    log_text = f"🛠️ Đang chuẩn bị môi trường cho {', '.join(sel_models)}...\n"
+                    log_text = f"🛠️ Đang chuẩn bị môi trường cho {', '.join(sel_models)} (Mốc: {', '.join([str(x)+'d' for x in sel_hz_manual])})...\n"
                     log_area.code(log_text)
                     
                     import subprocess
-                    cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models
+                    cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_manual]
                     
                     try:
                         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
