@@ -357,7 +357,10 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                         
                         if not pred.empty:
                             f_date = last_date + pd.Timedelta(days=h)
-                            row = {"Horizon": f"{h} ngày ({f_date.strftime('%d/%m/%Y')})"}
+                            row = {
+                                "Ngày dự đoán": f_date.strftime('%d/%m/%Y'),
+                                "Mốc (Horizon)": f"+{h} ngày"
+                            }
                             for tgt in TARGET_COLS:
                                 val = float(pred.iloc[0][tgt])
                                 row[tgt] = f"{val:,.0f}"
@@ -367,7 +370,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                 except: continue
             
             if all_preds:
-                safe_dataframe(pd.DataFrame(all_preds).set_index("Horizon"))
+                safe_dataframe(pd.DataFrame(all_preds).set_index("Ngày dự đoán"))
                 
             # Vẽ biểu đồ so sánh TẤT CẢ lộ trình
             st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
