@@ -490,10 +490,9 @@ if CACHE_FILE.exists():
 else: combined = None
 
 if combined is None:
-    if file_paths:
-        combined = run_upload_simulation(str(BUILTIN_CSV), file_paths, CUTOFF_DATE)
-        pd.to_pickle({"fp": fingerprint, "df": combined}, CACHE_FILE)
-    else: combined = pd.DataFrame()
+    # Không tự động chạy simulation ở đây nữa để tránh làm chậm việc upload/finetune
+    combined = pd.DataFrame()
+
 
 # Sidebar
 st.sidebar.header("⚙️ Cấu hình")
@@ -516,7 +515,9 @@ if not combined.empty:
         combined = combined.rename(columns={"Mặt hàng": "Target"})
     # Chỉ hiển thị dữ liệu từ ngày bắt đầu simulation (Sep 2025) để tránh hiện lịch sử quá cũ
     df_view = combined[(combined["Model"].isin(sel_models)) & (combined[DATE_COL] >= CUTOFF_DATE)]
-else: df_view = pd.DataFrame()
+else: 
+    df_view = pd.DataFrame()
+
 
 # Tabs
 t1, t2, t3, t4, t5 = st.tabs(["⬆️ Upload & Dự báo", "🏆 Tổng kết", "📋 Lịch sử upload", "📈 Biểu đồ", "🗃️ Bảng chi tiết"])
@@ -564,7 +565,17 @@ with t1:
                     st.error(f"Lỗi: {e}")
 
 with t2:
+    # Nếu chưa có kết quả simulation, cho phép chạy tại đây
+    if df_view.empty and file_paths:
+        st.info("📊 Bạn vừa upload dữ liệu mới hoặc đổi mô hình. Nhấn nút bên dưới để cập nhật bảng đánh giá độ chính xác.")
+        if st.button("📈 Chạy Phân tích & Đánh giá (MAE/MAPE)"):
+            with st.spinner("⏳ Hệ thống đang chạy mô phỏng dự báo quá khứ để tính độ lệch..."):
+                combined = run_upload_simulation(str(BUILTIN_CSV), file_paths, CUTOFF_DATE)
+                pd.to_pickle({"fp": fingerprint, "df": combined}, CACHE_FILE)
+                st.rerun()
+
     if not df_view.empty:
+
         h_order = [f"{h}d" for h in HORIZONS]
         st.subheader("MAE trung bình")
         mae_piv = df_view.groupby(["Model", "Horizon"])["Sai lệch"].mean().unstack().round(2)
