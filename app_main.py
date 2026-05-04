@@ -545,8 +545,8 @@ with t1:
                         st.rerun()
                     else:
                         st.error("❌ Có lỗi xảy ra trong quá trình xử lý Dự báo.")
-            except Exception as e:
-                st.error(f"Lỗi: {e}")
+                except Exception as e:
+                    st.error(f"Lỗi: {e}")
 
 with t2:
     if not df_view.empty:
