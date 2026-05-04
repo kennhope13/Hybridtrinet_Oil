@@ -24,7 +24,9 @@ OUT_DIR.mkdir(exist_ok=True)
 
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
-HORIZONS = [1, 5, 10, 30, 60, 100]
+MASTER_HORIZON = 100
+HORIZONS = [1, 5, 10, 30, 60, 100] # Giữ lại để mapping UI
+
 
 # ─── Config ───
 GUMNET_SEQ_LEN = 30
@@ -143,12 +145,12 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
 
     model = GUMNet(
         seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols),
-        output_dim=len(TARGET_COLS), horizon=horizon,
+        output_dim=len(TARGET_COLS), horizon=MASTER_HORIZON,
         d_feat=64, num_quantiles=3,
     ).to(device)
 
     # Nạp checkpoint cũ nếu có để Finetune
-    ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
+    ckpt_path = OUT_DIR / "gumnet_full.pt"
     current_lr = GUMNET_LR
     if ckpt_path.exists():
         try:
@@ -170,7 +172,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
         return loss / len(quantiles)
 
     best_val = float("inf")
-    ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
+    ckpt_path = OUT_DIR / "gumnet_full.pt"
     patience = 15
     wait = 0
 
@@ -205,7 +207,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
             wait = 0
             torch.save({
                 "model_state_dict": model.state_dict(),
-                "seq_len": GUMNET_SEQ_LEN, "horizon": horizon,
+                "seq_len": GUMNET_SEQ_LEN, "horizon": MASTER_HORIZON,
                 "num_quantiles": 3, "quantiles": quantiles,
                 "feature_cols": feature_cols, "target_cols": TARGET_COLS,
                 "input_dim": len(feature_cols), "output_dim": len(TARGET_COLS),
@@ -288,7 +290,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     va_loader = DataLoader(va_ds, batch_size=HYBRID_BATCH)
 
     model = HybridTriNet(
-        k=K, H=horizon, D_in=len(f_cols), D_out=len(TARGET_COLS),
+        k=K, H=MASTER_HORIZON, D_in=len(f_cols), D_out=len(TARGET_COLS),
         d_feat=96, kan_M=8, kan_depth=2,
         gru_hidden=128, gru_layers=1,
         attn_dmodel=64, attn_heads=4, attn_layers=2,
@@ -296,7 +298,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     ).to(device)
 
     # Nạp checkpoint cũ nếu có để Finetune
-    ckpt_path = OUT_DIR / f"hybrid_h{horizon}.pt"
+    ckpt_path = OUT_DIR / "hybrid_full.pt"
     current_lr = HYBRID_LR
     if ckpt_path.exists():
         try:
@@ -315,7 +317,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
 
     best_val = float("inf")
     best_state = None
-    ckpt_path = OUT_DIR / f"hybrid_h{horizon}.pt"
+    ckpt_path = OUT_DIR / "hybrid_full.pt"
     patience, bad = 25, 0
 
     for epoch in range(n_epochs):
@@ -362,7 +364,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
         torch.save(best_state, ckpt_path)
 
     # Save metadata
-    run_dir = OUT_DIR / f"hybrid_h{horizon}_meta"
+    run_dir = OUT_DIR / "hybrid_full_meta"
     run_dir.mkdir(exist_ok=True)
     np.save(run_dir / "x_mu.npy", mu)
     np.save(run_dir / "x_sd.npy", sd)
@@ -392,20 +394,19 @@ if __name__ == "__main__":
     df = read_data()
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
-    # 3. Huấn luyện lần lượt từng chân trời
-    for h in args.horizons:
-        flush_print(f"\n{'='*40}")
-        flush_print(f"📅 CHÂN TRỜI DỰ BÁO: {h} NGÀY")
-        flush_print(f"{'='*40}")
-        
-        if "GUMNet" in args.models:
-            flush_print(f"🧠 [GUMNet] Đang huấn luyện...")
-            train_gumnet_horizon(df, h, device, epochs=args.epochs)
-            
-        if "HybridTriNet" in args.models:
-            flush_print(f"🧬 [HybridTriNet] Đang huấn luyện...")
-            train_hybrid_horizon(df, h, device, epochs=args.epochs)
-
+    # 3. Huấn luyện mô hình SIÊU TỔNG HỢP (Master Model 100 ngày)
+    flush_print(f"\n{'='*40}")
+    flush_print(f"🚀 ĐANG HUẤN LUYỆN SIÊU MÔ HÌNH (100 NGÀY)")
+    flush_print(f"{'='*40}")
     
-    flush_print("\n✅ TẤT CẢ MÔ HÌNH ĐÃ ĐƯỢC HUẤN LUYỆN LẠI THÀNH CÔNG!")
+    if "GUMNet" in args.models:
+        flush_print(f"🧠 [GUMNet] Đang huấn luyện mốc 100 ngày...")
+        train_gumnet_horizon(df, MASTER_HORIZON, device, epochs=args.epochs)
+        
+    if "HybridTriNet" in args.models:
+        flush_print(f"🧬 [HybridTriNet] Đang huấn luyện mốc 100 ngày...")
+        train_hybrid_horizon(df, MASTER_HORIZON, device, epochs=args.epochs)
+    
+    flush_print("\n✅ SIÊU MÔ HÌNH ĐÃ ĐƯỢC CẬP NHẬT THÀNH CÔNG!")
+
     print(f"Checkpoints đã lưu tại: {OUT_DIR}")

@@ -131,8 +131,10 @@ def load_model(model_name, horizon):
         cls = getattr(mod, cfg["cls"])
 
         if model_name == "GUMNet":
-            ckpt_path = CKPT_DIR / f"gumnet_h{horizon}.pt"
+            ckpt_path = CKPT_DIR / "gumnet_full.pt"
+            if not ckpt_path.exists(): ckpt_path = CKPT_DIR / "gumnet_h100.pt"
             if not ckpt_path.exists(): raise FileNotFoundError(f"Missing {ckpt_path.name}")
+            
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model = cls(
                 seq_len=ckpt["seq_len"], input_dim=ckpt["input_dim"],
@@ -147,14 +149,24 @@ def load_model(model_name, horizon):
                 "feature_scaler": ckpt["feature_scaler"], "target_scaler": ckpt["target_scaler"],
             }
         else:
-            ckpt_path = CKPT_DIR / f"hybrid_h{horizon}.pt"
-            meta_dir = CKPT_DIR / f"hybrid_h{horizon}_meta"
+            ckpt_path = CKPT_DIR / "hybrid_full.pt"
+            meta_dir = CKPT_DIR / "hybrid_full_meta"
+            if not ckpt_path.exists():
+                ckpt_path = CKPT_DIR / "hybrid_h100.pt"
+                meta_dir = CKPT_DIR / "hybrid_h100_meta"
+            
             if not ckpt_path.exists(): raise FileNotFoundError(f"Missing {ckpt_path.name}")
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-            with open(meta_dir / "feature_cols.json") as f: fj = json.load(f)
-            f_cols = [c.strip() for c in fj["feature_cols"]]
+            
+            try:
+                with open(meta_dir / "feature_cols.json") as f: fj = json.load(f)
+            except:
+                # Fallback nếu không có file json thì lấy từ chính checkpoint (nếu có lưu)
+                fj = {"K": 64, "H": 100} 
+
+            f_cols = [c.strip() for c in fj.get("feature_cols", ["MG95", "MG92", "DO 0.001%", "DO 0.05%"])]
             model = cls(
-                k=fj["K"], H=horizon, D_in=len(f_cols), D_out=len(TARGET_COLS),
+                k=fj.get("K", 64), H=fj.get("H", 100), D_in=len(f_cols), D_out=len(TARGET_COLS),
                 d_feat=96, kan_M=8, kan_depth=2, gru_hidden=128, gru_layers=1,
                 attn_dmodel=64, attn_heads=4, attn_layers=2, patch_len=16, stride=8,
             ).to(device)
@@ -205,7 +217,8 @@ def run_upload_simulation(base_path, upload_files, start_date):
     with open("d:/Anh_Thuy/sim_log.txt", "w", encoding="utf-8") as logf:
         logf.write(f"Simulation started. Files: {len(upload_files)}\n")
         
-        total_tasks = len(upload_files) * len(MODEL_DEFS) * len(HORIZONS)
+        # Chỉ cần task_idx cho từng model và từng file
+        total_tasks = len(upload_files) * len(MODEL_DEFS)
         task_idx = 0
         prog = st.progress(0)
         
@@ -224,7 +237,6 @@ def run_upload_simulation(base_path, upload_files, start_date):
 
             base_dates = set(base[DATE_COL].dt.strftime('%Y-%m-%d'))
             new_rows = df_upload[~df_upload[DATE_COL].dt.strftime('%Y-%m-%d').isin(base_dates)].copy()
-            # CHỈ lấy dữ liệu từ ngày cutoff trở đi để tập trung vào 15 file đánh giá
             new_rows = new_rows[new_rows[DATE_COL] >= start_date]
             
             if not new_rows.empty:
@@ -233,77 +245,70 @@ def run_upload_simulation(base_path, upload_files, start_date):
                 base_enriched = enrich_with_exo(base_for_pred, base_full)
 
                 for mname in MODEL_DEFS:
-                    for h in HORIZONS:
-                        task_idx += 1
-                        prog.progress(task_idx / total_tasks, text=f"⏳ {mname} h={h} | File {idx+1}/{len(upload_files)}")
-                        try:
-                            model, meta, device = load_model(mname, h)
-                            if not model: 
-                                logf.write(f"ERROR: {mname} h={h} failed to load: {meta}\n")
-                                continue
+                    task_idx += 1
+                    prog.progress(min(task_idx / total_tasks, 1.0), text=f"⏳ {mname} | File {idx+1}/{len(upload_files)}")
+                    try:
+                        # Load mô hình Siêu tổng hợp 100 ngày
+                        model, meta, device = load_model(mname, 100)
+                        if not model: continue
+                        
+                        _swap_src(MODEL_DEFS[mname]["proj_dir"])
+                        match_data = []
+                        
+                        # Tối ưu mật độ dự báo (chọn các điểm tiêu biểu để test)
+                        if len(new_rows) < 30:
+                            indices = np.arange(len(new_rows))
+                        else:
+                            indices = np.unique(np.concatenate([
+                                np.linspace(0, len(new_rows) - 1, 5, dtype=int),
+                                np.arange(len(new_rows) - 15, len(new_rows))
+                            ]))
+                            indices = [i for i in indices if i >= 0 and i < len(new_rows)]
+                        
+                        for idx_in_new in indices:
+                            history_df = pd.concat([base_enriched, new_rows.iloc[:idx_in_new]], ignore_index=True)
+                            missing = [c for c in meta["feature_cols"] if c not in history_df.columns]
+                            if missing:
+                                history_df = generate_time_features(history_df)
+                                for mc in missing:
+                                    if mc in base_full.columns:
+                                        history_df[mc] = base_full.set_index(DATE_COL).reindex(history_df[DATE_COL])[mc].values
                             
-                            _swap_src(MODEL_DEFS[mname]["proj_dir"])
-                            match_data = []
+                            history_df = history_df.ffill().bfill().fillna(0)
                             
-                            # Tối ưu mật độ dự báo
-                            if len(new_rows) < 30:
-                                indices = np.arange(len(new_rows))
-                            else:
-                                # Lấy 5 điểm rải đều + toàn bộ 15 ngày cuối cùng
-                                indices = np.unique(np.concatenate([
-                                    np.linspace(0, len(new_rows) - 1, 5, dtype=int),
-                                    np.arange(len(new_rows) - 15, len(new_rows))
-                                ]))
-                                indices = [i for i in indices if i >= 0 and i < len(new_rows)]
-                            
-                            for idx_in_new in indices:
-                                history_df = pd.concat([base_enriched, new_rows.iloc[:idx_in_new]], ignore_index=True)
-                                missing = [c for c in meta["feature_cols"] if c not in history_df.columns]
-                                if missing:
-                                    history_df = generate_time_features(history_df)
-                                    for mc in missing:
-                                        if mc in base_full.columns:
-                                            history_df[mc] = base_full.set_index(DATE_COL).reindex(history_df[DATE_COL])[mc].values
-                                
-                                # Đảm bảo không có NaN
-                                history_df = history_df.ffill().bfill().fillna(0)
-                                
-                                pred = predict_from_df(model, meta, history_df, device)
-                                logf.write(f"DEBUG: {mname} h={h} File {idx+1} Point {idx_in_new} -> {len(pred)} pred rows\n")
-                                
-                                actual_pool = df_upload[df_upload[DATE_COL] > history_df[DATE_COL].iloc[-1]].copy()
-                                if actual_pool.empty: 
-                                    logf.write(f"DEBUG: actual_pool empty for end={history_df[DATE_COL].iloc[-1]}\n")
-                                    continue
+                            # DỰ BÁO 1 LẦN DUY NHẤT (100 NGÀY)
+                            full_pred = predict_from_df(model, meta, history_df, device)
+                            if full_pred.empty: continue
 
-                                if pred[meta["target_cols"]].isna().any().any():
-                                    logf.write(f"WARNING: NaNs in prediction {mname} h={h} File {idx+1}\n")
-                                    continue
+                            actual_pool = df_upload[df_upload[DATE_COL] > history_df[DATE_COL].iloc[-1]].copy()
+                            if actual_pool.empty: continue
 
-                                for _, p_row in pred.iterrows():
-                                    diff = (actual_pool[DATE_COL] - p_row[DATE_COL]).dt.days.abs()
-                                    if not diff.empty and diff.min() <= 3:
-                                        a_row = actual_pool.loc[diff.idxmin()]
-                                        day_idx = pred[pred[DATE_COL] == p_row[DATE_COL]].index[0] + 1
-                                        logf.write(f"   MATCH: Pred {p_row[DATE_COL].date()} vs Actual {a_row[DATE_COL].date()} (diff={diff.min()})\n")
-                                        for tgt in avail_tgt:
-                                            if tgt in p_row and tgt in a_row and pd.notna(a_row[tgt]):
-                                                match_data.append({
-                                                    "Model": mname, "Horizon": f"{h}d",
-                                                    "Upload": f"#{idx+1} {fpath.name}", "Ngày thứ": day_idx,
-                                                    DATE_COL: a_row[DATE_COL], "Target": tgt,
-                                                    "Dự báo": round(float(p_row[tgt]), 2), "Thực tế": round(float(a_row[tgt]), 2),
-                                                    "Sai lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])), 2),
-                                                    "% Lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])) / (abs(float(a_row[tgt])) + 1e-8) * 100, 2),
-                                                })
-                            
-                            if match_data:
-                                logf.write(f"SUCCESS: File {idx+1} {h}d - Found {len(match_data)} matches\n")
-                                res_df = pd.DataFrame(match_data).drop_duplicates(subset=["Model", "Horizon", DATE_COL, "Target"])
-                                all_records.extend(res_df.to_dict("records"))
-                        except Exception as e: 
-                            logf.write(f"EXCEPTION: {mname} h={h}: {e}\n")
-                            continue
+                            # Trích xuất kết quả cho TỪNG chân trời (1d, 5d... 100d) từ lộ trình 100 ngày
+                            for h in HORIZONS:
+                                idx_h = min(h - 1, len(full_pred) - 1)
+                                p_row = full_pred.iloc[idx_h]
+                                
+                                # Tìm thực tế tương ứng ngày dự báo của mô hình
+                                diff = (actual_pool[DATE_COL] - p_row[DATE_COL]).dt.days.abs()
+                                if not diff.empty and diff.min() <= 3:
+                                    a_row = actual_pool.loc[diff.idxmin()]
+                                    for tgt in avail_tgt:
+                                        if tgt in p_row and tgt in a_row and pd.notna(a_row[tgt]):
+                                            match_data.append({
+                                                "Model": mname, "Horizon": f"{h}d",
+                                                "Upload": f"#{idx+1} {fpath.name}",
+                                                DATE_COL: a_row[DATE_COL], "Target": tgt,
+                                                "Dự báo": round(float(p_row[tgt]), 2), "Thực tế": round(float(a_row[tgt]), 2),
+                                                "Sai lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])), 2),
+                                                "% Lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])) / (abs(float(a_row[tgt])) + 1e-8) * 100, 2),
+                                            })
+                        
+                        if match_data:
+                            res_df = pd.DataFrame(match_data).drop_duplicates(subset=["Model", "Horizon", DATE_COL, "Target"])
+                            all_records.extend(res_df.to_dict("records"))
+                    except Exception as e: 
+                        logf.write(f"EXCEPTION: {mname}: {e}\n")
+                        continue
                 
                 base = pd.concat([base, new_rows], ignore_index=True)
                 base = base.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
@@ -352,41 +357,48 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                 if tgt in last_prices:
                     future_points.append({DATE_COL: last_date, "Target": tgt, "Giá": float(last_prices[tgt]), "Loại": "Hiện tại"})
 
-            for h in HORIZONS:
-                try:
-                    model, meta, device = load_model(mname, h)
-                    if model:
-                        _swap_src(MODEL_DEFS[mname]["proj_dir"])
-                        history_enriched = generate_time_features(history)
-                        missing = [c for c in meta["feature_cols"] if c not in history_enriched.columns]
-                        for mc in missing:
-                            if mc in base_full.columns:
-                                history_enriched[mc] = base_full.set_index(DATE_COL).reindex(history_enriched[DATE_COL])[mc].values
-                        
-                        history_enriched = history_enriched.ffill().bfill().fillna(0)
-                        pred = predict_from_df(model, meta, history_enriched, device)
-                        
-                        if not pred.empty:
-                            f_date = pred[DATE_COL].iloc[-1] if DATE_COL in pred.columns else last_date + pd.Timedelta(days=h)
-                            row = {
+            # 1. Chạy dự báo SIÊU TỔNG HỢP (Master 100 ngày) - Chỉ chạy 1 lần duy nhất
+            try:
+                model, meta, device = load_model(mname, 100)
+                if model:
+                    _swap_src(MODEL_DEFS[mname]["proj_dir"])
+                    history_enriched = generate_time_features(history)
+                    missing = [c for c in meta["feature_cols"] if c not in history_enriched.columns]
+                    for mc in missing:
+                        if mc in base_full.columns:
+                            history_enriched[mc] = base_full.set_index(DATE_COL).reindex(history_enriched[DATE_COL])[mc].values
+                    
+                    history_enriched = history_enriched.ffill().bfill().fillna(0)
+                    # Lấy dự báo full 100 ngày
+                    master_pred = predict_from_df(model, meta, history_enriched, device)
+                    
+                    if not master_pred.empty:
+                        for h in HORIZONS:
+                            # Trích xuất dòng tương ứng với mốc h (vd: dòng 1 cho 1d, dòng 5 cho 5d)
+                            # Lưu ý: master_pred có index 0..99 tương ứng ngày +1..+100
+                            idx_h = min(h - 1, len(master_pred) - 1)
+                            row_h = master_pred.iloc[idx_h]
+                            f_date = row_h[DATE_COL] if DATE_COL in master_pred.columns else last_date + pd.Timedelta(days=h)
+                            
+                            row_ui = {
                                 "Ngày dự đoán": f_date.strftime('%d/%m/%Y'),
                                 "Mốc (Horizon)": f"+{h} ngày"
                             }
                             for tgt in TARGET_COLS:
-                                val = float(pred.iloc[-1][tgt]) # Lấy điểm t+h
-                                row[tgt] = f"{val:,.0f}"
-                                # Thêm điểm vào biểu đồ (chỉ lấy điểm cuối của horizon)
+                                val = float(row_h[tgt])
+                                row_ui[tgt] = f"{val:,.0f}"
                                 future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
-                            all_preds.append(row)
                             
-                            # Lưu trữ dự báo chi tiết
-                            detailed_preds[h] = pred.copy()
+                            all_preds.append(row_ui)
+                            detailed_preds[h] = master_pred.iloc[:idx_h+1].copy()
 
-                except: continue
-            
+            except Exception as e:
+                st.error(f"Lỗi khi dự báo {mname}: {e}")
+
             if all_preds:
-                st.markdown("#### Tóm tắt các mốc (Điểm cuối cùng)")
+                st.markdown("#### Tóm tắt các mốc (Trích xuất từ lộ trình 100 ngày)")
                 safe_dataframe(pd.DataFrame(all_preds).set_index("Ngày dự đoán"))
+
                 
                 st.markdown("#### Chi tiết từng ngày trong mốc")
                 sel_h = st.selectbox(f"Chọn mốc để xem chi tiết ({mname})", HORIZONS, format_func=lambda x: f"{x} ngày")
