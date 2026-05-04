@@ -533,18 +533,18 @@ with t1:
                 import subprocess
                 cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "80", "--models"] + sel_models
                 try:
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
-                log_text = ""
-                for line in process.stdout:
-                    log_text += line
-                    log_area.code("\n".join(log_text.splitlines()[-15:]))
-                process.wait()
-                if process.returncode == 0:
-                    st.success("✅ ĐÃ HOÀN TẤT PHÂN TÍCH & DỰ BÁO! Đang cập nhật bảng kết quả...")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("❌ Có lỗi xảy ra trong quá trình xử lý Dự báo.")
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                    log_text = ""
+                    for line in process.stdout:
+                        log_text += line
+                        log_area.code("\n".join(log_text.splitlines()[-15:]))
+                    process.wait()
+                    if process.returncode == 0:
+                        st.success("✅ ĐÃ HOÀN TẤT PHÂN TÍCH & DỰ BÁO! Đang cập nhật bảng kết quả...")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("❌ Có lỗi xảy ra trong quá trình xử lý Dự báo.")
             except Exception as e:
                 st.error(f"Lỗi: {e}")
 
@@ -597,21 +597,21 @@ with t2:
                     cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models
                     
                     try:
-                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
-                    
-                    for line in process.stdout:
-                        log_text += line
-                        # Chỉ lấy 20 dòng cuối để UI không bị quá dài
-                        display_text = "\n".join(log_text.splitlines()[-20:])
-                        log_area.code(display_text)
-                    
-                    process.wait()
-                    if process.returncode == 0:
-                        st.success("✅ HUẤN LUYỆN LẠI THÀNH CÔNG! Hãy nhấn 'Xóa Cache Simulation' để cập nhật kết quả.")
-                    else:
-                        st.error(f"❌ Có lỗi xảy ra trong quá trình huấn luyện (Code: {process.returncode})")
-                except Exception as e:
-                    st.error(f"❌ Không thể khởi chạy tiến trình huấn luyện: {e}")
+                        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                        
+                        for line in process.stdout:
+                            log_text += line
+                            # Chỉ lấy 20 dòng cuối để UI không bị quá dài
+                            display_text = "\n".join(log_text.splitlines()[-20:])
+                            log_area.code(display_text)
+                        
+                        process.wait()
+                        if process.returncode == 0:
+                            st.success("✅ HUẤN LUYỆN LẠI THÀNH CÔNG! Hãy nhấn 'Xóa Cache Simulation' để cập nhật kết quả.")
+                        else:
+                            st.error(f"❌ Có lỗi xảy ra trong quá trình huấn luyện (Code: {process.returncode})")
+                    except Exception as e:
+                        st.error(f"❌ Không thể khởi chạy tiến trình huấn luyện: {e}")
 
     else: st.info("Chưa có dữ liệu so sánh.")
 
