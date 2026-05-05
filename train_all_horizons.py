@@ -24,8 +24,9 @@ OUT_DIR.mkdir(exist_ok=True)
 
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
-MASTER_HORIZON = 100
-HORIZONS = [1, 5, 10, 30, 60, 100] # Giữ lại để mapping UI
+MASTER_HORIZON = 60  # Mốc dài nhất
+HORIZONS = [1, 5, 10, 30, 60]
+
 
 
 # ─── Config ───
@@ -50,54 +51,60 @@ def flush_print(msg):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--update_data", action="store_true", help="Cập nhật dữ liệu từ thư mục datasets vào CSV gốc")
-    parser.add_argument("--epochs", type=int, default=None, help="Số epoch huấn luyện (mặc định lấy theo config)")
-    parser.add_argument("--models", nargs="+", default=["HybridTriNet", "GUMNet"], help="Danh sách mô hình cần train")
-    parser.add_argument("--horizons", nargs="+", type=int, default=HORIZONS, help="Danh sách chân trời cần train (vd: 1 5 100)")
+    parser.add_argument("--update_data", action="store_true", help="Cập nhật dữ liệu vào CSV gốc")
+    parser.add_argument("--new_file", type=str, help="Đường dẫn file mới nhất để nạp lẻ")
+    parser.add_argument("--epochs", type=int, default=None, help="Số epoch huấn luyện")
+    parser.add_argument("--models", nargs="+", default=["HybridTriNet", "GUMNet"], help="Danh sách mô hình")
+    parser.add_argument("--horizons", nargs="+", type=int, default=HORIZONS, help="Danh sách chân trời")
+    parser.add_argument("--force_retrain", action="store_true", help="Xóa checkpoint cũ, train lại từ đầu")
     return parser.parse_args()
 
-def update_training_data():
-    """Gộp các file trong datasets vào clean_data_exo_ver1.csv"""
-    flush_print("🔄 Bước 1: Đang quét thư mục datasets...")
-    base_df = pd.read_csv(DATA_PATH)
-    base_df[DATE_COL] = pd.to_datetime(base_df[DATE_COL], errors="coerce")
-    
-    data_dir = ROOT / "datasets"
-    files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
-    flush_print(f"📂 Tìm thấy {len(files)} file tiềm năng.")
-    
-    new_data = []
-    for i, f in enumerate(files):
-        try:
-            flush_print(f"   📥 Đang nạp file {i+1}/{len(files)}: {f.name}...")
-            if f.suffix.lower() == ".csv": df = pd.read_csv(f)
-            else: df = pd.read_excel(f)
-            
-            dcol = None
-            for c in df.columns:
-                if str(c).lower() in ["ngày", "ngay", "date"]: dcol = c; break
-            
-            if dcol:
-                df = df.rename(columns={dcol: DATE_COL})
-                df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce", format='mixed')
-                df = df.dropna(subset=[DATE_COL])
-                cols = [DATE_COL] + [c for c in TARGET_COLS if c in df.columns]
-                new_data.append(df[cols])
-        except Exception as e: 
-            flush_print(f"   ⚠️ Lỗi file {f.name}: {e}")
-            continue
-    
-    if new_data:
-        flush_print("🔄 Bước 2: Đang gộp dữ liệu và loại bỏ trùng lặp...")
-        full_new = pd.concat(new_data)
-        combined = pd.concat([base_df, full_new], ignore_index=True)
-        combined = combined.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
-        combined = combined.infer_objects(copy=False)
-        combined = combined.interpolate().bfill().ffill()
-        combined.to_csv(DATA_PATH, index=False)
-        flush_print(f"✅ Thành công! Tổng cộng {len(combined)} dòng dữ liệu trong bộ nhớ học tập.")
-    else:
-        flush_print("⚠️ Không tìm thấy dữ liệu mới để cập nhật.")
+
+
+def update_training_data(specific_file=None):
+    """Gộp dữ liệu mới vào clean_data_exo_ver1.csv"""
+    try:
+        base_df = pd.read_csv(DATA_PATH)
+        base_df[DATE_COL] = pd.to_datetime(base_df[DATE_COL], errors="coerce")
+        
+        if specific_file:
+            files = [Path(specific_file)]
+            flush_print(f"🎯 Chỉ nạp lẻ file mới: {files[0].name}")
+        else:
+            flush_print("🔄 Quét toàn bộ thư mục datasets...")
+            data_dir = ROOT / "datasets"
+            files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
+        
+        new_data = []
+        for i, f in enumerate(files):
+            try:
+                if f.suffix.lower() == ".csv": df = pd.read_csv(f)
+                else: df = pd.read_excel(f)
+                
+                dcol = None
+                for c in df.columns:
+                    if str(c).lower() in ["ngày", "ngay", "date"]: dcol = c; break
+                
+                if dcol:
+                    df = df.rename(columns={dcol: DATE_COL})
+                    df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce", format='mixed')
+                    df = df.dropna(subset=[DATE_COL])
+                    cols = [DATE_COL] + [c for c in TARGET_COLS if c in df.columns]
+                    new_data.append(df[cols])
+            except: continue
+        
+        if new_data:
+            full_new = pd.concat(new_data)
+            combined = pd.concat([base_df, full_new], ignore_index=True)
+            combined = combined.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
+            combined = combined.interpolate().bfill().ffill()
+            combined.to_csv(DATA_PATH, index=False)
+            flush_print(f"✅ Đã cập nhật dataset. Tổng cộng {len(combined)} dòng.")
+        else:
+            flush_print("⚠️ Không có dữ liệu mới.")
+    except Exception as e:
+        flush_print(f"❌ Lỗi cập nhật: {e}")
+
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -145,24 +152,28 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
 
     model = GUMNet(
         seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols),
-        output_dim=len(TARGET_COLS), horizon=MASTER_HORIZON,
+        output_dim=len(TARGET_COLS), horizon=horizon,
         d_feat=64, num_quantiles=3,
     ).to(device)
 
-    # Nạp checkpoint cũ nếu có để Finetune
-    ckpt_path = OUT_DIR / "gumnet_full.pt"
+
+    # Nạp checkpoint cũ của ĐÚNG MỐC này nếu có để Finetune
+    ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
     current_lr = GUMNET_LR
     if ckpt_path.exists():
         try:
             ckpt = torch.load(ckpt_path, map_location=device)
             model.load_state_dict(ckpt["model_state_dict"])
-            current_lr = GUMNET_LR * 0.2 # Giảm LR để học tinh chỉnh
+            current_lr = GUMNET_LR * 0.2
             flush_print(f"   ♻️ Đã nạp GUMNet h{horizon} để học tiếp (Finetune)...")
         except:
             flush_print(f"   ⚠️ Không thể nạp checkpoint GUMNet h{horizon}, sẽ học mới.")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=current_lr)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=current_lr, weight_decay=5e-4)
+
     quantiles = [0.1, 0.5, 0.9]
+
 
     def q_loss(pred, target):
         loss = 0.0
@@ -172,9 +183,12 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
         return loss / len(quantiles)
 
     best_val = float("inf")
-    ckpt_path = OUT_DIR / "gumnet_full.pt"
+    ckpt_path = OUT_DIR / f"gumnet_h{horizon}.pt"
     patience = 15
     wait = 0
+
+
+
 
     for epoch in range(n_epochs):
         model.train()
@@ -207,7 +221,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
             wait = 0
             torch.save({
                 "model_state_dict": model.state_dict(),
-                "seq_len": GUMNET_SEQ_LEN, "horizon": MASTER_HORIZON,
+                "seq_len": GUMNET_SEQ_LEN, "horizon": horizon,
                 "num_quantiles": 3, "quantiles": quantiles,
                 "feature_cols": feature_cols, "target_cols": TARGET_COLS,
                 "input_dim": len(feature_cols), "output_dim": len(TARGET_COLS),
@@ -215,6 +229,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
                 "target_scaler": processor.target_scaler,
                 "date_col": DATE_COL, "d_feat": 64,
             }, ckpt_path)
+
         else:
             wait += 1
             if wait >= patience:
@@ -290,25 +305,32 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     va_loader = DataLoader(va_ds, batch_size=HYBRID_BATCH)
 
     model = HybridTriNet(
-        k=K, H=MASTER_HORIZON, D_in=len(f_cols), D_out=len(TARGET_COLS),
+        k=K, H=horizon, D_in=len(f_cols), D_out=len(TARGET_COLS),
         d_feat=96, kan_M=8, kan_depth=2,
         gru_hidden=128, gru_layers=1,
         attn_dmodel=64, attn_heads=4, attn_layers=2,
         patch_len=16, stride=8,
     ).to(device)
 
-    # Nạp checkpoint cũ nếu có để Finetune
-    ckpt_path = OUT_DIR / "hybrid_full.pt"
+
+    # Nạp checkpoint cũ của ĐÚNG MỐC này nếu có để Finetune
+    ckpt_path = OUT_DIR / f"hybrid_h{horizon}.pt"
     current_lr = HYBRID_LR
     if ckpt_path.exists():
         try:
-            model.load_state_dict(torch.load(ckpt_path, map_location=device))
+            state = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(state, strict=True)
             current_lr = HYBRID_LR * 0.2
             flush_print(f"   ♻️ Đã nạp Hybrid h{horizon} để học tiếp (Finetune)...")
-        except:
-            flush_print(f"   ⚠️ Không thể nạp checkpoint Hybrid h{horizon}, sẽ học mới.")
+        except Exception as ex:
+            flush_print(f"   ⚠️ Checkpoint h{horizon} không tương thích ({ex}), sẽ train lại từ đầu.")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=1e-4)
+
+
+    # Nới lỏng weight_decay để tránh Underfitting (hạ từ 1e-3 về 5e-4)
+    opt = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=5e-4)
+
+
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=current_lr * 2,
         total_steps=max(1, n_epochs * len(tr_loader)),
@@ -317,8 +339,12 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
 
     best_val = float("inf")
     best_state = None
-    ckpt_path = OUT_DIR / "hybrid_full.pt"
-    patience, bad = 25, 0
+    ckpt_path = OUT_DIR / f"hybrid_h{horizon}.pt"
+
+    # Nới lỏng patience để AI học sâu hơn (nâng lên 15)
+    patience, bad = 15, 0
+
+
 
     for epoch in range(n_epochs):
         model.train()
@@ -363,8 +389,8 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     if best_state:
         torch.save(best_state, ckpt_path)
 
-    # Save metadata
-    run_dir = OUT_DIR / "hybrid_full_meta"
+    # Save metadata — mỗi horizon có thư mục meta riêng
+    run_dir = OUT_DIR / f"hybrid_h{horizon}_meta"
     run_dir.mkdir(exist_ok=True)
     np.save(run_dir / "x_mu.npy", mu)
     np.save(run_dir / "x_sd.npy", sd)
@@ -373,7 +399,8 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     with open(run_dir / "feature_cols.json", "w") as f:
         json.dump({"feature_cols": f_cols, "tgt_idx": tgt_idx, "K": K, "H": horizon}, f, indent=2)
 
-    print(f"    Saved: {ckpt_path}  (best_val={best_val:.6f})")
+    print(f"    Saved: {ckpt_path}  meta: {run_dir.name}  (best_val={best_val:.6f})")
+
 
 
 # ═══════════════════════  MAIN  ═══════════════════════════════════════════════
@@ -384,7 +411,8 @@ if __name__ == "__main__":
     
     # 1. Cập nhật dữ liệu nếu được yêu cầu
     if args.update_data:
-        update_training_data()
+        update_training_data(args.new_file)
+
         
     # 2. Thiết lập thiết bị và dữ liệu
     set_seed(SEED)
@@ -394,19 +422,31 @@ if __name__ == "__main__":
     df = read_data()
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
-    # 3. Huấn luyện mô hình SIÊU TỔNG HỢP (Master Model 100 ngày)
-    flush_print(f"\n{'='*40}")
-    flush_print(f"🚀 ĐANG HUẤN LUYỆN SIÊU MÔ HÌNH (100 NGÀY)")
-    flush_print(f"{'='*40}")
-    
-    if "GUMNet" in args.models:
-        flush_print(f"🧠 [GUMNet] Đang huấn luyện mốc 100 ngày...")
-        train_gumnet_horizon(df, MASTER_HORIZON, device, epochs=args.epochs)
+    # 3. Huấn luyện từng mốc Horizon riêng biệt (Multi-Model Mode)
+    for hz in args.horizons:
+        flush_print(f"\n{'='*40}")
+        flush_print(f"🚀 ĐANG HUẤN LUYỆN MỐC: {hz} NGÀY")
+        flush_print(f"{'='*40}")
+
+        # Xóa checkpoint cũ nếu bật chế độ Train lại từ đầu
+        if args.force_retrain:
+            for pattern in [f"gumnet_h{hz}.pt", f"hybrid_h{hz}.pt"]:
+                old = OUT_DIR / pattern
+                if old.exists():
+                    old.unlink()
+                    flush_print(f"   🗑️ Đã xóa checkpoint cũ: {pattern}")
+            flush_print(f"   🔁 Bắt đầu TRAIN LạI Từ ĐẦU (không dùng checkpoint cũ)")
         
-    if "HybridTriNet" in args.models:
-        flush_print(f"🧬 [HybridTriNet] Đang huấn luyện mốc 100 ngày...")
-        train_hybrid_horizon(df, MASTER_HORIZON, device, epochs=args.epochs)
+
+        if "GUMNet" in args.models:
+            flush_print(f"🧠 [GUMNet] Horizon {hz}d...")
+            train_gumnet_horizon(df, hz, device, epochs=args.epochs)
+            
+        if "HybridTriNet" in args.models:
+            flush_print(f"🧬 [HybridTriNet] Horizon {hz}d...")
+            train_hybrid_horizon(df, hz, device, epochs=args.epochs)
     
-    flush_print("\n✅ SIÊU MÔ HÌNH ĐÃ ĐƯỢC CẬP NHẬT THÀNH CÔNG!")
+    flush_print("\n✅ TẤT CẢ CÁC MÔ HÌNH ĐÃ ĐƯỢC CẬP NHẬT!")
+
 
     print(f"Checkpoints đã lưu tại: {OUT_DIR}")

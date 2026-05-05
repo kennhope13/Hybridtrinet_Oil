@@ -37,7 +37,7 @@ CKPT_DIR = ROOT / "checkpoints_multi"
 
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 DATE_COL = "Ngày"
-HORIZONS = [1, 5, 10, 30, 60, 100]
+HORIZONS = [1, 5, 10, 30, 60]
 CUTOFF_DATE = pd.Timestamp("2025-09-20")
 
 MODEL_DEFS = {
@@ -122,19 +122,21 @@ def _swap_src(proj_dir):
     for m in [k for k in list(sys.modules) if k.startswith("src")]: del sys.modules[m]
 
 @st.cache_resource
-def load_model(model_name, horizon):
+def load_model(name, horizon):
+    """Nạp mô hình chuyên biệt cho từng mốc (đọc đúng cấu trúc file thực tế)."""
     try:
-        cfg = MODEL_DEFS[model_name]
+        conf = MODEL_DEFS[name]
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        _swap_src(cfg["proj_dir"])
-        mod = importlib.import_module(cfg["mod"])
-        cls = getattr(mod, cfg["cls"])
+        _swap_src(conf["proj_dir"])
+        mod = importlib.import_module(conf["mod"])
+        importlib.reload(mod)
+        cls = getattr(mod, conf["cls"])
 
-        if model_name == "GUMNet":
-            ckpt_path = CKPT_DIR / "gumnet_full.pt"
-            if not ckpt_path.exists(): ckpt_path = CKPT_DIR / "gumnet_h100.pt"
-            if not ckpt_path.exists(): raise FileNotFoundError(f"Missing {ckpt_path.name}")
-            
+        if name == "GUMNet":
+            # GUMNet lưu toàn bộ meta trong file .pt
+            ckpt_path = CKPT_DIR / f"gumnet_h{horizon}.pt"
+            if not ckpt_path.exists():
+                return None, None, device
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model = cls(
                 seq_len=ckpt["seq_len"], input_dim=ckpt["input_dim"],
@@ -144,68 +146,107 @@ def load_model(model_name, horizon):
             model.load_state_dict(ckpt["model_state_dict"])
             meta = {
                 "feature_cols": [c.strip() for c in ckpt["feature_cols"]],
-                "target_cols": [c.strip() for c in ckpt["target_cols"]],
+                "target_cols":  [c.strip() for c in ckpt["target_cols"]],
                 "seq_len": ckpt["seq_len"], "horizon": ckpt["horizon"], "kind": "quantile",
-                "feature_scaler": ckpt["feature_scaler"], "target_scaler": ckpt["target_scaler"],
+                "feature_scaler": ckpt["feature_scaler"],
+                "target_scaler":  ckpt["target_scaler"],
             }
-        else:
-            ckpt_path = CKPT_DIR / "hybrid_full.pt"
-            meta_dir = CKPT_DIR / "hybrid_full_meta"
-            if not ckpt_path.exists():
-                ckpt_path = CKPT_DIR / "hybrid_h100.pt"
-                meta_dir = CKPT_DIR / "hybrid_h100_meta"
-            
-            if not ckpt_path.exists(): raise FileNotFoundError(f"Missing {ckpt_path.name}")
-            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-            
-            try:
-                with open(meta_dir / "feature_cols.json") as f: fj = json.load(f)
-            except:
-                # Fallback nếu không có file json thì lấy từ chính checkpoint (nếu có lưu)
-                fj = {"K": 64, "H": 100} 
 
-            f_cols = [c.strip() for c in fj.get("feature_cols", ["MG95", "MG92", "DO 0.001%", "DO 0.05%"])]
+        else:
+            # HybridTriNet: file .pt + thư mục meta riêng
+            ckpt_path = CKPT_DIR / f"hybrid_h{horizon}.pt"
+            meta_dir  = CKPT_DIR / f"hybrid_h{horizon}_meta"
+            if not ckpt_path.exists() or not meta_dir.exists():
+                return None, None, device
+
+            with open(meta_dir / "feature_cols.json") as f:
+                fj = json.load(f)
+
+            f_cols = [c.strip() for c in fj.get("feature_cols", TARGET_COLS)]
+            K = fj.get("K", 64)
+            # Dùng H từ metadata (H mà model được train), không dùng horizon yêu cầu
+            H_model = fj.get("H", horizon)
+
             model = cls(
-                k=fj.get("K", 64), H=fj.get("H", 100), D_in=len(f_cols), D_out=len(TARGET_COLS),
-                d_feat=96, kan_M=8, kan_depth=2, gru_hidden=128, gru_layers=1,
-                attn_dmodel=64, attn_heads=4, attn_layers=2, patch_len=16, stride=8,
+                k=K, H=H_model, D_in=len(f_cols), D_out=len(TARGET_COLS),
+                d_feat=96, kan_M=8, kan_depth=2,
+                gru_hidden=128, gru_layers=1,
+                attn_dmodel=64, attn_heads=4, attn_layers=2,
+                patch_len=16, stride=8,
             ).to(device)
-            model.load_state_dict(ckpt)
+            model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False))
             meta = {
-                "feature_cols": f_cols, "target_cols": TARGET_COLS, "seq_len": fj["K"],
-                "horizon": horizon, "kind": "point",
-                "x_mu": np.load(meta_dir / "x_mu.npy"), "x_sd": np.load(meta_dir / "x_sd.npy"),
-                "y_mu": np.load(meta_dir / "y_mu.npy"), "y_sd": np.load(meta_dir / "y_sd.npy"),
+                "feature_cols": f_cols, "target_cols": TARGET_COLS,
+                "seq_len": K, "horizon": H_model, "kind": "point",
+                "x_mu": np.load(meta_dir / "x_mu.npy"),
+                "x_sd": np.load(meta_dir / "x_sd.npy"),
+                "y_mu": np.load(meta_dir / "y_mu.npy"),
+                "y_sd": np.load(meta_dir / "y_sd.npy"),
             }
+
+
         model.eval()
         return model, meta, device
     except Exception as e:
-        # Trả về lỗi để UI hiển thị thay vì nuốt chửng
-        return None, str(e), None
+        return None, str(e), "cpu"
+
 
 def predict_from_df(model, meta, df, device):
-    k, f_cols, t_cols = meta["seq_len"], meta["feature_cols"], meta["target_cols"]
-    X = df[f_cols].values
-    if "feature_scaler" in meta: X = meta["feature_scaler"].transform(X)
-    else: X = (X - meta["x_mu"]) / (meta["x_sd"] + 1e-8)
-    x_in = torch.tensor(X[-k:], dtype=torch.float32).unsqueeze(0).to(device)
-    with torch.no_grad(): out, _ = model(x_in)
-    if meta["kind"] == "quantile":
-        p = np.sort(out.cpu().numpy()[0], axis=-1)
-        p50 = meta["target_scaler"].inverse_transform(p[..., 1])
+    k      = meta["seq_len"]
+    f_cols = meta["feature_cols"]
+    t_cols = meta["target_cols"]
+    n_tgt  = len(t_cols)
+
+    # Chuẩn bị đầu vào
+    available = [c for c in f_cols if c in df.columns]
+    X = df[available].values
+    if len(available) < len(f_cols):
+        pad = np.zeros((len(X), len(f_cols) - len(available)))
+        X = np.hstack([X, pad])
+
+    if "feature_scaler" in meta:
+        X = meta["feature_scaler"].transform(X)
     else:
+        X = (X - meta["x_mu"]) / (meta["x_sd"] + 1e-8)
+
+    x_in = torch.tensor(X[-k:], dtype=torch.float32).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        out, _ = model(x_in)
+
+    if meta["kind"] == "quantile":
+        # GUMNet: out shape (1, H, n_quantiles, n_tgt) hoặc (1, H, n_tgt, n_quantiles)
+        raw = out.cpu().numpy()[0]  # (H, ...)
+        if raw.ndim == 3:           # (H, n_tgt, n_quantiles)
+            p50 = meta["target_scaler"].inverse_transform(raw[:, :, 1])
+        else:                       # fallback
+            p50 = meta["target_scaler"].inverse_transform(raw[..., 1])
+    else:
+        # HybridTriNet: out shape (1, H*n_tgt) hoặc (1, H, n_tgt)
         raw = out.cpu().numpy()[0]
-        flat = raw.reshape(-1, len(t_cols))
-        p50 = flat * (meta["y_sd"] + 1e-8) + meta["y_mu"]
-    h = p50.shape[0]
-    last = df[DATE_COL].iloc[-1]
+        if raw.ndim == 1:
+            total = raw.size
+            H = total // n_tgt
+            raw = raw.reshape(H, n_tgt)
+        # y_mu/y_sd là của toàn bộ feature, chỉ lấy n_tgt cột cuối (target cols)
+        y_mu = np.array(meta["y_mu"]).reshape(-1)[-n_tgt:]
+        y_sd = np.array(meta["y_sd"]).reshape(-1)[-n_tgt:]
+        p50 = raw * (y_sd + 1e-8) + y_mu
+
+
+    # Sinh ngày (bỏ qua cuối tuần)
+    h_out = p50.shape[0]
+    last  = df[DATE_COL].iloc[-1]
     dates, d = [], last
-    while len(dates) < h:
+    while len(dates) < h_out:
         d += pd.Timedelta(days=1)
-        if d.weekday() < 5: dates.append(d)
+        if d.weekday() < 5:
+            dates.append(d)
+
     result = pd.DataFrame(p50[:len(dates)], columns=t_cols)
     result.insert(0, DATE_COL, [pd.Timestamp(dt).normalize() for dt in dates[:len(result)]])
     return result
+
 
 # ═══════════════════  SIMULATION ENGINE  ══════════════════════════════════════
 
@@ -217,10 +258,10 @@ def run_upload_simulation(base_path, upload_files, start_date):
     with open("d:/Anh_Thuy/sim_log.txt", "w", encoding="utf-8") as logf:
         logf.write(f"Simulation started. Files: {len(upload_files)}\n")
         
-        # Chỉ cần task_idx cho từng model và từng file
-        total_tasks = len(upload_files) * len(MODEL_DEFS)
+        status_text = st.empty()
         task_idx = 0
-        prog = st.progress(0)
+        total_tasks = len(upload_files) * len(MODEL_DEFS)
+
         
         for idx, fpath in enumerate(upload_files):
             df_upload = load_df(fpath)
@@ -246,60 +287,54 @@ def run_upload_simulation(base_path, upload_files, start_date):
 
                 for mname in MODEL_DEFS:
                     task_idx += 1
-                    prog.progress(min(task_idx / total_tasks, 1.0), text=f"⏳ {mname} | File {idx+1}/{len(upload_files)}")
                     try:
-                        # Load mô hình Siêu tổng hợp 100 ngày
-                        model, meta, device = load_model(mname, 100)
-                        if not model: continue
-                        
-                        _swap_src(MODEL_DEFS[mname]["proj_dir"])
                         match_data = []
+                        # CHẾ ĐỘ SIÊU NHẸ: 3 điểm kiểm tra mỗi file
+                        indices = np.unique(np.linspace(0, len(new_rows) - 1, 3, dtype=int))
+                        indices = [i for i in indices if 0 <= i < len(new_rows)]
                         
-                        # Tối ưu mật độ dự báo (chọn các điểm tiêu biểu để test)
-                        if len(new_rows) < 30:
-                            indices = np.arange(len(new_rows))
-                        else:
-                            indices = np.unique(np.concatenate([
-                                np.linspace(0, len(new_rows) - 1, 5, dtype=int),
-                                np.arange(len(new_rows) - 15, len(new_rows))
-                            ]))
-                            indices = [i for i in indices if i >= 0 and i < len(new_rows)]
-                        
-                        for idx_in_new in indices:
+                        import gc
+                        for step_i, idx_in_new in enumerate(indices):
+                            status_text.text(f"⏳ {mname} | File {idx+1} | Điểm {step_i+1}/{len(indices)}")
+                            gc.collect()
+                            if torch.cuda.is_available(): torch.cuda.empty_cache()
+                            
                             history_df = pd.concat([base_enriched, new_rows.iloc[:idx_in_new]], ignore_index=True)
-                            missing = [c for c in meta["feature_cols"] if c not in history_df.columns]
-                            if missing:
-                                history_df = generate_time_features(history_df)
-                                for mc in missing:
-                                    if mc in base_full.columns:
-                                        history_df[mc] = base_full.set_index(DATE_COL).reindex(history_df[DATE_COL])[mc].values
-                            
-                            history_df = history_df.ffill().bfill().fillna(0)
-                            
-                            # DỰ BÁO 1 LẦN DUY NHẤT (100 NGÀY)
-                            full_pred = predict_from_df(model, meta, history_df, device)
-                            if full_pred.empty: continue
-
-                            actual_pool = df_upload[df_upload[DATE_COL] > history_df[DATE_COL].iloc[-1]].copy()
+                            actual_pool = new_rows.iloc[idx_in_new:idx_in_new+1].copy()
                             if actual_pool.empty: continue
-
-                            # Trích xuất kết quả cho TỪNG chân trời (1d, 5d... 100d) từ lộ trình 100 ngày
+                            
                             for h in HORIZONS:
-                                idx_h = min(h - 1, len(full_pred) - 1)
-                                p_row = full_pred.iloc[idx_h]
+                                # Nạp mô hình chuyên biệt cho đúng mốc h
+                                model_h, meta_h, device_h = load_model(mname, h)
+                                if not model_h: continue
+                                _swap_src(MODEL_DEFS[mname]["proj_dir"])
                                 
-                                # Tìm thực tế tương ứng ngày dự báo của mô hình (Khớp chính xác tuyệt đối)
+                                missing = [c for c in meta_h["feature_cols"] if c not in history_df.columns]
+                                hist_filled = history_df.copy()
+                                if missing:
+                                    hist_filled = generate_time_features(hist_filled)
+                                    for mc in missing:
+                                        if mc in base_full.columns:
+                                            hist_filled[mc] = base_full.set_index(DATE_COL).reindex(hist_filled[DATE_COL])[mc].values
+                                hist_filled = hist_filled.ffill().bfill().fillna(0)
+                                
+                                pred_df = predict_from_df(model_h, meta_h, hist_filled, device_h)
+                                if pred_df.empty: continue
+                                
+                                idx_h = min(h - 1, len(pred_df) - 1)
+                                p_row = pred_df.iloc[idx_h]
+                                
                                 diff = (actual_pool[DATE_COL] - p_row[DATE_COL]).dt.days.abs()
                                 if not diff.empty and diff.min() == 0:
                                     a_row = actual_pool.loc[diff.idxmin()]
-
                                     for tgt in avail_tgt:
-                                        if tgt in p_row and tgt in a_row and pd.notna(a_row[tgt]):
+                                        if tgt in p_row and tgt in a_row.index and pd.notna(a_row[tgt]):
                                             match_data.append({
                                                 "Model": mname, "Horizon": f"{h}d",
                                                 "Upload": f"#{idx+1} {fpath.name}",
                                                 DATE_COL: a_row[DATE_COL], "Target": tgt,
-                                                "Dự báo": round(float(p_row[tgt]), 2), "Thực tế": round(float(a_row[tgt]), 2),
+                                                "Dự báo": round(float(p_row[tgt]), 2),
+                                                "Thực tế": round(float(a_row[tgt]), 2),
                                                 "Sai lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])), 2),
                                                 "% Lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])) / (abs(float(a_row[tgt])) + 1e-8) * 100, 2),
                                             })
@@ -314,7 +349,8 @@ def run_upload_simulation(base_path, upload_files, start_date):
                 base = pd.concat([base, new_rows], ignore_index=True)
                 base = base.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
 
-        prog.empty()
+        status_text.empty()
+
     return pd.DataFrame(all_records)
 
 def show_live_forecasts(base_full, file_paths, sel_models):
@@ -363,98 +399,98 @@ def show_live_forecasts(base_full, file_paths, sel_models):
             
             # Lấy giá hiện tại làm mốc 0
             last_prices = history.iloc[-1]
+            future_points = []
             for tgt in TARGET_COLS:
                 if tgt in last_prices:
                     future_points.append({DATE_COL: last_date, "Target": tgt, "Giá": float(last_prices[tgt]), "Loại": "Hiện tại"})
 
-            # 1. Chạy dự báo SIÊU TỔNG HỢP (Master 100 ngày) - Chỉ chạy 1 lần duy nhất
-            try:
-                model, meta, device = load_model(mname, 100)
-                if model:
+            # Chuẩn bị dữ liệu lịch sử một lần duy nhất
+            history_enriched = generate_time_features(history.copy())
+
+            # Chạy dự báo cho từng mốc với model chuyên biệt
+            all_preds = []
+            pred_cache = {}  # Lưu kết quả để vẽ biểu đồ
+
+            for h in HORIZONS:
+                try:
+                    model_h, meta_h, device_h = load_model(mname, h)
+                    if not model_h:
+                        continue
                     _swap_src(MODEL_DEFS[mname]["proj_dir"])
-                    history_enriched = generate_time_features(history)
-                    missing = [c for c in meta["feature_cols"] if c not in history_enriched.columns]
+
+                    # Bổ sung cột còn thiếu
+                    hist_h = history_enriched.copy()
+                    missing = [c for c in meta_h["feature_cols"] if c not in hist_h.columns]
                     for mc in missing:
                         if mc in base_full.columns:
-                            history_enriched[mc] = base_full.set_index(DATE_COL).reindex(history_enriched[DATE_COL])[mc].values
-                    
-                    history_enriched = history_enriched.ffill().bfill().fillna(0)
-                    # Lấy dự báo full 100 ngày
-                    master_pred = predict_from_df(model, meta, history_enriched, device)
-                    
-                    if not master_pred.empty:
-                        for h in HORIZONS:
-                            # Trích xuất dòng tương ứng với mốc h (vd: dòng 1 cho 1d, dòng 5 cho 5d)
-                            # Lưu ý: master_pred có index 0..99 tương ứng ngày +1..+100
-                            idx_h = min(h - 1, len(master_pred) - 1)
-                            row_h = master_pred.iloc[idx_h]
-                            f_date = row_h[DATE_COL] if DATE_COL in master_pred.columns else last_date + pd.Timedelta(days=h)
-                            
-                            row_ui = {
-                                "Ngày dự đoán": f_date.strftime('%d/%m/%Y'),
-                                "Mốc (Horizon)": f"+{h} ngày"
-                            }
-                            for tgt in TARGET_COLS:
-                                val = float(row_h[tgt])
-                                row_ui[tgt] = f"{val:,.0f}"
-                                future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
-                            
-                            all_preds.append(row_ui)
-                            detailed_preds[h] = master_pred.iloc[:idx_h+1].copy()
+                            hist_h[mc] = base_full.set_index(DATE_COL).reindex(hist_h[DATE_COL])[mc].values
+                    hist_h = hist_h.ffill().bfill().fillna(0)
 
-            except Exception as e:
-                st.error(f"Lỗi khi dự báo {mname}: {e}")
+                    pred_df = predict_from_df(model_h, meta_h, hist_h, device_h)
+                    if pred_df.empty:
+                        continue
 
+                    # Lấy dòng cuối cùng là dự báo tại mốc h ngày
+                    p_row = pred_df.iloc[-1]
+                    f_date = last_date + pd.Timedelta(days=h)
+                    if DATE_COL in pred_df.columns:
+                        f_date = p_row[DATE_COL]
+
+                    row_ui = {"Ngày dự đoán": f_date.strftime('%d/%m/%Y'), "Mốc": f"+{h} ngày"}
+                    for tgt in TARGET_COLS:
+                        if tgt in p_row:
+                            val = float(p_row[tgt])
+                            row_ui[tgt] = f"{val:,.0f}"
+                            future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
+
+                    all_preds.append(row_ui)
+                    pred_cache[h] = (pred_df, f_date)
+
+                except Exception as e:
+                    st.caption(f"⚠️ Mốc {h}d: {e}")
+                    continue
+
+            # Hiển thị bảng tóm tắt
             if all_preds:
-                st.markdown("#### Tóm tắt các mốc (Trích xuất từ lộ trình 100 ngày)")
+                st.markdown("#### 📋 Tóm tắt dự báo các mốc")
                 safe_dataframe(pd.DataFrame(all_preds).set_index("Ngày dự đoán"))
 
-                
-                st.markdown("#### Chi tiết từng ngày trong mốc")
-                sel_h = st.selectbox(f"Chọn mốc để xem chi tiết ({mname})", HORIZONS, format_func=lambda x: f"{x} ngày")
-                if sel_h in detailed_preds:
-                    df_detail = detailed_preds[sel_h].copy()
-                    if DATE_COL in df_detail.columns:
-                        df_detail[DATE_COL] = df_detail[DATE_COL].dt.strftime('%d/%m/%Y')
-                        df_detail = df_detail.set_index(DATE_COL)
-                    safe_dataframe(df_detail)
-                
-            # Vẽ biểu đồ so sánh TẤT CẢ lộ trình
-            st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
-            for tgt in TARGET_COLS:
-                fig = go.Figure()
-                # Thêm điểm bắt đầu (giá hiện tại)
-                last_val = float(last_prices[tgt])
-                
-                # Duyệt qua tất cả các horizon để vẽ lộ trình của từng cái
-                for h in HORIZONS:
-                    try:
-                        model_h, meta_h, device_h = load_model(mname, h)
-                        if model_h:
-                            _swap_src(MODEL_DEFS[mname]["proj_dir"])
-                            history_enriched = generate_time_features(history)
-                            missing = [c for c in meta_h["feature_cols"] if c not in history_enriched.columns]
-                            for mc in missing:
-                                if mc in base_full.columns:
-                                    history_enriched[mc] = base_full.set_index(DATE_COL).reindex(history_enriched[DATE_COL])[mc].values
-                            history_enriched = history_enriched.ffill().bfill().fillna(0)
-                            
-                            pred_h = predict_from_df(model_h, meta_h, history_enriched, device_h)
-                            if not pred_h.empty:
-                                dates = [last_date + pd.Timedelta(days=d) for d in range(1, h + 1)]
-                                vals = pred_h[tgt].values
-                                all_dates = [last_date] + dates
-                                all_vals = [last_val] + list(vals)
-                                
-                                # Dùng nét đứt cho các horizon ngắn, nét liền cho 100d
-                                dash = "solid" if h == 100 else "dot"
-                                width = 3 if h == 100 else 1.5
-                                fig.add_trace(go.Scatter(x=all_dates, y=all_vals, name=f"Dự báo {h}d", mode="lines", line=dict(dash=dash, width=width)))
-                    except: continue
-                
-                fig.update_layout(title=f"So sánh lộ trình dự báo: {tgt}", template="plotly_dark", height=350, hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True)
+            # Vẽ biểu đồ lộ trình cho từng mặt hàng
+            if pred_cache:
+                st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
+                for tgt in TARGET_COLS:
+                    fig = go.Figure()
+                    last_val = float(last_prices[tgt]) if tgt in last_prices else 0
+
+                    for h, (pred_df, f_date) in pred_cache.items():
+                        if tgt not in pred_df.columns:
+                            continue
+                        vals = pred_df[tgt].values[:h]
+                        if DATE_COL in pred_df.columns:
+                            dates = list(pred_df[DATE_COL].values[:h])
+                        else:
+                            dates = [last_date + pd.Timedelta(days=d) for d in range(1, h + 1)]
+
+                        all_dates = [last_date] + list(dates)
+                        all_vals  = [last_val]  + list(vals)
+
+                        dash  = "solid" if h == max(HORIZONS) else "dot"
+                        width = 2.5    if h == max(HORIZONS) else 1.5
+                        fig.add_trace(go.Scatter(
+                            x=all_dates, y=all_vals,
+                            name=f"Dự báo {h}d", mode="lines",
+                            line=dict(dash=dash, width=width)
+                        ))
+
+                    fig.update_layout(
+                        title=f"So sánh lộ trình dự báo: {tgt}",
+                        template="plotly_dark", height=350, hovermode="x unified"
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key=f"chart_{mname}_{tgt}")
+
     st.markdown("---")
+
+
 
 # ═══════════════════════════  UI  ═════════════════════════════════════════════
 
@@ -533,11 +569,29 @@ else:
 t1, t2, t3, t4, t5 = st.tabs(["⬆️ Upload & Dự báo", "🏆 Tổng kết", "📋 Lịch sử upload", "📈 Biểu đồ", "🗃️ Bảng chi tiết"])
 
 with t1:
-    # Hiển thị dự báo tương lai dựa trên mô hình đang chọn ở Sidebar
-    show_live_forecasts(base_full_orig, file_paths, sel_models)
+    # Kiểm tra xem đã có checkpoint chưa
+    ckpts_exist = any((CKPT_DIR / f"gumnet_h{h}.pt").exists() for h in HORIZONS)
     
+    if ckpts_exist:
+        # Hiển thị dự báo tương lai dựa trên mô hình đang có
+        show_live_forecasts(base_full_orig, file_paths, sel_models)
+    else:
+        st.info("ℹ️ **Chưa có mô hình nào được huấn luyện.**\n\n"
+                "Hãy chạy `CHAY_UNG_DUNG.bat` để tự động huấn luyện lần đầu,\n"
+                "hoặc upload file dữ liệu và nhấn **Tự động huấn luyện** bên dưới.")
+
+
     st.subheader("⬆️ Upload file mới")
-    auto_ft = st.checkbox("🔄 Tự động phân tích và sinh Dự báo ngay sau khi tải file lên (Khuyến nghị bật, mất ~5 phút)", value=True)
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        auto_ft = st.checkbox("🔄 Tự động huấn luyện sau khi tải file", value=True)
+    with c2:
+        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=[1, 5, 10, 30])
+    with c3:
+        train_mode = st.radio("Chế độ", ["⚡ Finetune", "🔁 Train lại từ đầu"], index=0,
+                              help="Finetune: học tiếp từ checkpoint cũ (nhanh).\nTrain lại từ đầu: xóa checkpoint cũ, học toàn bộ dữ liệu (chính xác hơn nhưng lâu hơn).")
+    force_retrain = (train_mode == "🔁 Train lại từ đầu")
+
     up = st.file_uploader("Chọn file Excel/CSV", type=["xlsx", "xls", "csv"])
     if up:
         tmp = ROOT / "datasets" / up.name
@@ -545,20 +599,30 @@ with t1:
         st.success(f"✅ Đã lưu: {up.name}")
         df_new = load_df(tmp)
         if not df_new.empty:
-            st.info(f"📅 Dữ liệu mới nhất đến: {df_new[DATE_COL].max().strftime('%d/%m/%Y')}")
+            m_date = df_new[DATE_COL].max()
+            st.session_state["last_up_date"] = m_date
+            st.info(f"📅 Dữ liệu trong file mới nhất đến: {m_date.strftime('%d/%m/%Y')}")
+
+        # Chỉ train nếu file này chưa được train lần này (tránh lặp vô tận)
+        # Nếu chọn "Train lại từ đầu" thì luôn cho phép train
+        already_trained = (st.session_state.get("last_trained_file") == up.name) and not force_retrain
             
-        if auto_ft:
+        if auto_ft and not already_trained:
             if not sel_models:
-                st.error("❌ Vui lòng chọn ít nhất một mô hình ở thanh bên trái để phân tích!")
+                st.error("❌ Vui lòng chọn mô hình ở Sidebar!")
+            elif not sel_hz_auto:
+                st.error("❌ Vui lòng chọn ít nhất một mốc thời gian!")
             else:
-                # Mặc định auto-finetune các mốc ngắn (1d, 5d) để cực nhanh, hoặc tất cả nếu muốn
-                sel_hz = [1, 5] 
-                st.warning(f"⏳ Đang TỰ ĐỘNG phân tích dữ liệu cho {', '.join(sel_models)} (Mốc: {', '.join([str(x)+'d' for x in sel_hz])})...")
+                mode_label = "🔁 TRAIN LẠI TỪ ĐẦU" if force_retrain else "⚡ Finetune"
+                st.warning(f"⏳ {mode_label} — Mốc: {', '.join([str(x)+'d' for x in sel_hz_auto])}...")
                 log_area = st.empty()
                 import subprocess
-                # Giảm epoch xuống 50 cho auto-finetune để nhanh hơn nữa
-                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", "50", "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz]
+                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--new_file", str(tmp),
+                       "--epochs", "50", "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_auto]
+                if force_retrain:
+                    cmd.append("--force_retrain")
                 try:
+
                     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
                     log_text = ""
                     for line in process.stdout:
@@ -566,13 +630,76 @@ with t1:
                         log_area.code("\n".join(log_text.splitlines()[-15:]))
                     process.wait()
                     if process.returncode == 0:
-                        st.success("✅ ĐÃ HOÀN TẤT PHÂN TÍCH & DỰ BÁO! Đang cập nhật bảng kết quả...")
+                        st.session_state["last_trained_file"] = up.name
+                        st.cache_resource.clear()
                         st.cache_data.clear()
-                        st.rerun()
+                        st.success(f"✅ HOÀN TẤT! Đã finetune {', '.join([str(x)+'d' for x in sel_hz_auto])}")
+
+                        # Hiển thị dự báo ngay sau khi train xong
+                        st.markdown("---")
+                        last_upload_date = df_new[DATE_COL].max()
+                        st.markdown(f"### 🔮 Dự báo {max(sel_hz_auto)} ngày tiếp theo (từ {last_upload_date.strftime('%d/%m/%Y')})")
+
+                        # Chuẩn bị lịch sử từ file upload
+                        hist_for_pred = pd.concat([base_full_orig, df_new]).drop_duplicates(DATE_COL).sort_values(DATE_COL).tail(500)
+                        hist_for_pred = generate_time_features(hist_for_pred)
+
+                        for mname in sel_models:
+                            st.markdown(f"**🤖 {mname}**")
+                            # Dùng mốc lớn nhất đã chọn để có đủ ngày hiển thị
+                            h_display = max(sel_hz_auto)
+                            try:
+                                m_h, meta_h, dev_h = load_model(mname, h_display)
+                                if not m_h:
+                                    st.caption(f"⚠️ Chưa có model {mname} h{h_display}. Hãy train trước.")
+                                    continue
+                                _swap_src(MODEL_DEFS[mname]["proj_dir"])
+                                hist_h = hist_for_pred.copy()
+                                missing = [c for c in meta_h["feature_cols"] if c not in hist_h.columns]
+                                for mc in missing:
+                                    if mc in base_full_orig.columns:
+                                        hist_h[mc] = base_full_orig.set_index(DATE_COL).reindex(hist_h[DATE_COL])[mc].values
+                                hist_h = hist_h.ffill().bfill().fillna(0)
+
+                                pred_df = predict_from_df(m_h, meta_h, hist_h, dev_h)
+                                if pred_df.empty:
+                                    st.caption("⚠️ Model không trả về kết quả.")
+                                    continue
+
+                                # Hiển thị từng ngày trong lộ trình dự báo
+                                rows = []
+                                for i, row in pred_df.iterrows():
+                                    if DATE_COL in pred_df.columns:
+                                        ngay = pd.Timestamp(row[DATE_COL]).strftime('%d/%m/%Y (%a)')
+                                    else:
+                                        ngay = (last_upload_date + pd.Timedelta(days=i+1)).strftime('%d/%m/%Y (%a)')
+                                    
+                                    r = {"📅 Ngày": ngay}
+                                    for tgt in TARGET_COLS:
+                                        if tgt in row:
+                                            r[tgt] = f"{float(row[tgt]):,.2f}"
+                                    rows.append(r)
+
+                                if rows:
+                                    safe_dataframe(pd.DataFrame(rows).set_index("📅 Ngày"))
+
+                            except Exception as ex:
+                                st.error(f"Lỗi dự báo {mname}: {ex}")
+
+                        st.markdown("---")
+                        if st.button("🔄 Tải lại Dashboard", key="reload_after_train"):
+                            st.rerun()
+
                     else:
-                        st.error("❌ Có lỗi xảy ra trong quá trình xử lý Dự báo.")
+                        st.error("❌ Có lỗi xảy ra.")
                 except Exception as e:
                     st.error(f"Lỗi: {e}")
+        elif already_trained:
+            st.info("ℹ️ File này đã được học. Upload file mới để cập nhật thêm.")
+
+
+
+
 
 with t2:
     # Nếu chưa có kết quả simulation, cho phép chạy tại đây
