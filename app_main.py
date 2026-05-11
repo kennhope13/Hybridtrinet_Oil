@@ -257,7 +257,7 @@ def run_upload_simulation(base_path, upload_files, start_date):
     base = base_full[base_full[DATE_COL] < start_date].copy()
     all_records = []
     
-    with open("d:/Anh_Thuy/sim_log.txt", "w", encoding="utf-8") as logf:
+    with open(ROOT / "sim_log.txt", "w", encoding="utf-8") as logf:
         logf.write(f"Simulation started. Files: {len(upload_files)}\n")
         
         status_text = st.empty()
