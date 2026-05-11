@@ -127,6 +127,8 @@ def load_model(name, horizon):
     try:
         conf = MODEL_DEFS[name]
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Force device for debugging if needed (uncomment below if user wants to force)
+        # device = "cuda"
         _swap_src(conf["proj_dir"])
         mod = importlib.import_module(conf["mod"])
         importlib.reload(mod)
@@ -440,15 +442,19 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                     for tgt in TARGET_COLS:
                         if tgt in p_row:
                             val = float(p_row[tgt])
-                            row_ui[tgt] = f"{val:,.0f}"
+                            row_ui[tgt] = f"{val:,.2f}"
                             future_points.append({DATE_COL: f_date, "Target": tgt, "Giá": val, "Loại": "Dự báo"})
 
                     all_preds.append(row_ui)
+
                     pred_cache[h] = (pred_df, f_date)
 
                 except Exception as e:
-                    st.caption(f"⚠️ Mốc {h}d: {e}")
+                    # Quay lại dùng caption để không làm rối giao diện nếu mốc đó chưa có model
+                    st.caption(f"ℹ️ Mốc {h}d: {e}")
                     continue
+
+
 
             # Hiển thị bảng tóm tắt
             if all_preds:
@@ -477,16 +483,19 @@ def show_live_forecasts(base_full, file_paths, sel_models):
                         dash  = "solid" if h == max(HORIZONS) else "dot"
                         width = 2.5    if h == max(HORIZONS) else 1.5
                         fig.add_trace(go.Scatter(
-                            x=all_dates, y=all_vals,
+                            x=pd.to_datetime(all_dates), y=all_vals,
                             name=f"Dự báo {h}d", mode="lines",
                             line=dict(dash=dash, width=width)
                         ))
 
+
                     fig.update_layout(
                         title=f"So sánh lộ trình dự báo: {tgt}",
-                        template="plotly_dark", height=350, hovermode="x unified"
+                        template="plotly_dark", height=350, hovermode="x unified",
+                        xaxis=dict(type='date', tickformat='%d/%m/%Y')
                     )
                     st.plotly_chart(fig, use_container_width=True, key=f"chart_{mname}_{tgt}")
+
 
     st.markdown("---")
 
@@ -542,19 +551,22 @@ if combined is None:
 
 # Sidebar
 st.sidebar.header("⚙️ Cấu hình")
+
+# --- GPU Status ---
+device_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+device_color = "green" if torch.cuda.is_available() else "orange"
+st.sidebar.markdown(f"**Thiết bị:** :{device_color}[{device_name}]")
+if torch.cuda.is_available():
+    st.sidebar.caption(f"CUDA Version: {torch.version.cuda}")
+# ------------------
+
 opt = ["Tất cả (So sánh)"] + list(MODEL_DEFS.keys())
 sel_opt = st.sidebar.selectbox("Chọn Mô hình hiển thị", opt, index=0)
 sel_models = list(MODEL_DEFS.keys()) if sel_opt == "Tất cả (So sánh)" else [sel_opt]
 
 st.sidebar.markdown("---")
-if st.sidebar.button("🗑️ Xóa Cache Simulation"):
-    if CACHE_FILE.exists(): CACHE_FILE.unlink()
-    st.cache_data.clear()
-    st.rerun()
+# Đã ẩn các nút Cache và Lịch sử theo yêu cầu của bạn
 
-st.sidebar.header("📁 Lịch sử Upload")
-for i, f in enumerate(file_info):
-    st.sidebar.text(f"⬆️ {i+1}. {f['name']} ({f['max_date'].strftime('%d/%m')})")
 
 if not combined.empty:
     if "Mặt hàng" in combined.columns:
@@ -586,7 +598,8 @@ with t1:
     with c1:
         auto_ft = st.checkbox("🔄 Tự động huấn luyện sau khi tải file", value=True)
     with c2:
-        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=[1, 5, 10, 30])
+        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=[1, 5, 10, 30, 60])
+
     with c3:
         train_mode = st.radio("Chế độ", ["⚡ Finetune", "🔁 Train lại từ đầu"], index=0,
                               help="Finetune: học tiếp từ checkpoint cũ (nhanh).\nTrain lại từ đầu: xóa checkpoint cũ, học toàn bộ dữ liệu (chính xác hơn nhưng lâu hơn).")
@@ -633,7 +646,9 @@ with t1:
                         st.session_state["last_trained_file"] = up.name
                         st.cache_resource.clear()
                         st.cache_data.clear()
-                        st.success(f"✅ HOÀN TẤT! Đã finetune {', '.join([str(x)+'d' for x in sel_hz_auto])}")
+                        log_area.empty() # Ẩn Log sau khi xong
+                        st.success(f"✅ HOÀN TẤT! Đã huấn luyện thành công các mốc: {', '.join([str(x)+'d' for x in sel_hz_auto])}")
+
 
                         # Hiển thị dự báo ngay sau khi train xong
                         st.markdown("---")
