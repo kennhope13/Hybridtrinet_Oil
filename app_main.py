@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-# ─── Cấu hình để vượt qua lỗi bảo mật DLL trên một số máy (Application Control Policy) ───
+# --- Config DLL (Application Control Policy) ---
 import os
 os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh lỗi chặn DLL
 
@@ -30,7 +30,7 @@ def safe_dataframe(df, **kwargs):
             # 3. GIẢI PHÁP CUỐI CÙNG: Hiển thị bằng bảng cơ bản nhất
             st.write(df)
 
-# ═══════════════════════════  CONFIG  ═════════════════════════════════════════
+# === CONFIG ===
 ROOT = Path(__file__).resolve().parent
 BUILTIN_CSV = ROOT / "oil_forecast_research_new-main" / "data" / "processed" / "clean_data_exo_ver1.csv"
 CKPT_DIR = ROOT / "checkpoints_multi"
@@ -51,7 +51,7 @@ MODEL_DEFS = {
     },
 }
 
-# ═══════════════════════════  DATA HELPERS  ═══════════════════════════════════
+# === DATA HELPERS ===
 
 def load_df(path):
     path = Path(path)
@@ -113,7 +113,7 @@ def enrich_with_exo(df, base_df):
         if merged[c].isna().any(): merged[c] = merged[c].fillna(base_df[c].iloc[-1])
     return merged
 
-# ═══════════════════════════  MODEL LOADING  ══════════════════════════════════
+# === MODEL LOADING ===
 
 def _swap_src(proj_dir):
     d = str(proj_dir)
@@ -250,7 +250,7 @@ def predict_from_df(model, meta, df, device):
     return result
 
 
-# ═══════════════════  SIMULATION ENGINE  ══════════════════════════════════════
+# === SIMULATION ENGINE ===
 
 def run_upload_simulation(base_path, upload_files, start_date):
     base_full = load_df(base_path)
@@ -501,7 +501,7 @@ def show_live_forecasts(base_full, file_paths, sel_models):
 
 
 
-# ═══════════════════════════  UI  ═════════════════════════════════════════════
+# === UI ===
 
 st.set_page_config(page_title="Oil Forecast Hub", layout="wide", page_icon="🛢️")
 st.markdown("<style>.block-container { padding-top: 1rem; } h1 { background: linear-gradient(135deg, #00d4aa, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }</style>", unsafe_allow_html=True)
