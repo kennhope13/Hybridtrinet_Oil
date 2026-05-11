@@ -24,7 +24,7 @@ echo [INFO] Dang kiem tra va cap nhat thu vien...
 if errorlevel 1 goto :ERROR_PIP
 
 "venv\Scripts\python.exe" -m pip install -r requirements.txt -q
-"venv\Scripts\python.exe" -m pip uninstall -y pyarrow >nul 2>&1
+"venv\Scripts\python.exe" -m pip install pyarrow -q
 
 :: 3. Chay ung dung
 echo.

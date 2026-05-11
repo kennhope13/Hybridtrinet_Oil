@@ -733,11 +733,11 @@ with t2:
             st.subheader("📊 MAPE (%) theo Mốc")
             mape_h = df_view.groupby(["Model", "Horizon"])["% Lệch"].mean().unstack().round(2)
             mape_h = mape_h[[c for c in h_order if c in mape_h.columns]]
-            st.dataframe(mape_h.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
+            safe_dataframe(mape_h.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
         with col_b:
             st.subheader("🛢️ MAPE (%) theo Mặt hàng")
             mape_t = df_view.groupby(["Model", "Target"])["% Lệch"].mean().unstack().round(2)
-            st.dataframe(mape_t.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
+            safe_dataframe(mape_t.style.background_gradient(cmap="RdYlGn_r"), use_container_width=True)
 
         st.subheader("📋 Chi tiết sai lệch MAE")
         mae_piv = df_view.groupby(["Model", "Horizon"])["Sai lệch"].mean().unstack().round(2)
