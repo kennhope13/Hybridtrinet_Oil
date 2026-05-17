@@ -45,10 +45,6 @@ MODEL_DEFS = {
         "proj_dir": ROOT / "oil_forecast_research_new-main",
         "mod": "src.model.model", "cls": "GUMNet", "kind": "quantile",
     },
-    "HybridTriNet": {
-        "proj_dir": ROOT / "Hybridtrinet_Oil",
-        "mod": "src.model.hybrid_trinet", "cls": "HybridTriNet", "kind": "point",
-    },
 }
 
 # === DATA HELPERS ===
@@ -560,9 +556,8 @@ if torch.cuda.is_available():
     st.sidebar.caption(f"CUDA Version: {torch.version.cuda}")
 # ------------------
 
-opt = ["Tất cả (So sánh)"] + list(MODEL_DEFS.keys())
-sel_opt = st.sidebar.selectbox("Chọn Mô hình hiển thị", opt, index=0)
-sel_models = list(MODEL_DEFS.keys()) if sel_opt == "Tất cả (So sánh)" else [sel_opt]
+st.sidebar.markdown("**Mô hình sử dụng:** :blue[GUMNet]")
+sel_models = ["GUMNet"]
 
 st.sidebar.markdown("---")
 # Đã ẩn các nút Cache và Lịch sử theo yêu cầu của bạn

@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument("--update_data", action="store_true", help="Cập nhật dữ liệu vào CSV gốc")
     parser.add_argument("--new_file", type=str, help="Đường dẫn file mới nhất để nạp lẻ")
     parser.add_argument("--epochs", type=int, default=None, help="Số epoch huấn luyện")
-    parser.add_argument("--models", nargs="+", default=["HybridTriNet", "GUMNet"], help="Danh sách mô hình")
+    parser.add_argument("--models", nargs="+", default=["GUMNet"], help="Danh sách mô hình")
     parser.add_argument("--horizons", nargs="+", type=int, default=HORIZONS, help="Danh sách chân trời")
     parser.add_argument("--force_retrain", action="store_true", help="Xóa checkpoint cũ, train lại từ đầu")
     return parser.parse_args()
