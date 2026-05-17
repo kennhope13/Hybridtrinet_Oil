@@ -576,8 +576,9 @@ def render_post_upload_predictions(df_new, sel_hz, title):
     last_upload_date = df_new[DATE_COL].max()
     st.markdown(f"### 🔮 {title} (từ {last_upload_date.strftime('%d/%m/%Y')})")
 
-    # Chuẩn bị lịch sử từ file upload
-    hist_for_pred = pd.concat([base_full_orig, df_new]).drop_duplicates(DATE_COL).sort_values(DATE_COL).tail(500)
+    # Chuẩn bị lịch sử từ file upload (chỉ lấy lịch sử dataset gốc tính đến ngày cuối của file upload)
+    base_sliced = base_full_orig[base_full_orig[DATE_COL] <= last_upload_date]
+    hist_for_pred = pd.concat([base_sliced, df_new]).drop_duplicates(DATE_COL).sort_values(DATE_COL).tail(500)
     hist_for_pred = generate_time_features(hist_for_pred)
 
     for mname in sel_models:
