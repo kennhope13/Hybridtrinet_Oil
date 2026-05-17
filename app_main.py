@@ -37,7 +37,7 @@ CKPT_DIR = ROOT / "checkpoints_multi"
 
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 DATE_COL = "Ngày"
-HORIZONS = [1, 5, 10, 30, 60]
+HORIZONS = [1, 5, 10, 15, 20, 30, 60]
 CUTOFF_DATE = pd.Timestamp("2025-09-20")
 
 MODEL_DEFS = {
@@ -593,7 +593,7 @@ with t1:
     with c1:
         auto_ft = st.checkbox("🔄 Tự động huấn luyện sau khi tải file", value=True)
     with c2:
-        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=[1, 5, 10, 30, 60])
+        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=HORIZONS)
 
     with c3:
         train_mode = st.radio("Chế độ", ["⚡ Finetune", "🔁 Train lại từ đầu"], index=0,
@@ -768,7 +768,7 @@ with t2:
             """)
             
             n_epochs = st.number_input("Số vòng lặp (Epochs) huấn luyện thêm", min_value=1, max_value=200, value=50)
-            sel_hz_manual = st.multiselect("Chọn các mốc thời gian cần cập nhật", HORIZONS, default=[1, 5, 10, 30])
+            sel_hz_manual = st.multiselect("Chọn các mốc thời gian cần cập nhật", HORIZONS, default=[1, 5, 10, 15, 20, 30])
             
             if st.button("🚀 Bắt đầu Finetune Ngay"):
                 if not sel_models:

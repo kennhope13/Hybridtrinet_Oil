@@ -25,7 +25,7 @@ OUT_DIR.mkdir(exist_ok=True)
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 MASTER_HORIZON = 60  # Mốc dài nhất
-HORIZONS = [1, 5, 10, 30, 60]
+HORIZONS = [1, 5, 10, 15, 20, 30, 60]
 
 
 
