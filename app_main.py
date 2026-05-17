@@ -512,8 +512,9 @@ CACHE_FILE = ROOT / "simulation_cache.pkl"
 def get_dir_fingerprint():
     data_dir = ROOT / "datasets"
     files = list(data_dir.glob("*"))
-    if not files: return "empty"
-    return f"{len(files)}_{max(f.stat().st_mtime for f in files)}"
+    hz_str = "_".join(str(x) for x in HORIZONS)
+    if not files: return f"empty_{hz_str}"
+    return f"{len(files)}_{max(f.stat().st_mtime for f in files)}_{hz_str}"
 
 fingerprint = get_dir_fingerprint()
 
