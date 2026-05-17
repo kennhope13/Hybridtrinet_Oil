@@ -253,6 +253,14 @@ def run_upload_simulation(base_path, upload_files, start_date):
     base = base_full[base_full[DATE_COL] < start_date].copy()
     all_records = []
     
+    # Gộp toàn bộ dữ liệu thực tế lịch sử và các file upload để làm nguồn tra cứu giá thực tế
+    actual_dfs = [base_full]
+    for fp in upload_files:
+        df_tmp = load_df(fp)
+        if not df_tmp.empty:
+            actual_dfs.append(df_tmp)
+    full_actuals = pd.concat(actual_dfs, ignore_index=True).drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL)
+    
     with open(ROOT / "sim_log.txt", "w", encoding="utf-8") as logf:
         logf.write(f"Simulation started. Files: {len(upload_files)}\n")
         
@@ -321,16 +329,18 @@ def run_upload_simulation(base_path, upload_files, start_date):
                                 
                                 idx_h = min(h - 1, len(pred_df) - 1)
                                 p_row = pred_df.iloc[idx_h]
+                                pred_date = pd.Timestamp(p_row[DATE_COL]).normalize()
                                 
-                                diff = (actual_pool[DATE_COL] - p_row[DATE_COL]).dt.days.abs()
-                                if not diff.empty and diff.min() == 0:
-                                    a_row = actual_pool.loc[diff.idxmin()]
+                                # Tìm hàng thực tế tương ứng với ngày dự báo trong cơ sở dữ liệu thực tế đầy đủ
+                                match_row = full_actuals[full_actuals[DATE_COL] == pred_date]
+                                if not match_row.empty:
+                                    a_row = match_row.iloc[0]
                                     for tgt in avail_tgt:
                                         if tgt in p_row and tgt in a_row.index and pd.notna(a_row[tgt]):
                                             match_data.append({
                                                 "Model": mname, "Horizon": f"{h}d",
                                                 "Upload": f"#{idx+1} {fpath.name}",
-                                                DATE_COL: a_row[DATE_COL], "Target": tgt,
+                                                DATE_COL: pred_date, "Target": tgt,
                                                 "Dự báo": round(float(p_row[tgt]), 2),
                                                 "Thực tế": round(float(a_row[tgt]), 2),
                                                 "Sai lệch": round(abs(float(p_row[tgt]) - float(a_row[tgt])), 2),
