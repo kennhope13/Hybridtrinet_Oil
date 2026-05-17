@@ -643,6 +643,24 @@ with t1:
                         st.cache_resource.clear()
                         st.cache_data.clear()
                         log_area.empty() # Ẩn Log sau khi xong
+                        
+                        # --- TỰ ĐỘNG CẬP NHẬT CACHE TỔNG KẾT & LỊCH SỬ ---
+                        with st.spinner("⏳ Đang tự động phân tích & đánh giá sai số để điền dữ liệu cho tab Tổng kết & Lịch sử..."):
+                            data_dir = ROOT / "datasets"
+                            fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
+                            fresh_info = []
+                            for f in fresh_files:
+                                df_f = load_df(f)
+                                if not df_f.empty:
+                                    fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
+                            fresh_info.sort(key=lambda x: x["max_date"])
+                            updated_file_paths = [Path(i["path"]) for i in fresh_info]
+                            
+                            fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
+                            combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
+                            pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
+                        # -------------------------------------------------
+                        
                         st.success(f"✅ HOÀN TẤT! Đã huấn luyện thành công các mốc: {', '.join([str(x)+'d' for x in sel_hz_auto])}")
 
 
@@ -709,6 +727,28 @@ with t1:
                         st.error("❌ Có lỗi xảy ra.")
                 except Exception as e:
                     st.error(f"Lỗi: {e}")
+        elif not auto_ft and not already_trained:
+            # Tự động cập nhật cache đánh giá ngay cả khi không chọn tự động train
+            with st.spinner("⏳ Đang tự động phân tích & đánh giá dữ liệu mới..."):
+                data_dir = ROOT / "datasets"
+                fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
+                fresh_info = []
+                for f in fresh_files:
+                    df_f = load_df(f)
+                    if not df_f.empty:
+                        fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
+                fresh_info.sort(key=lambda x: x["max_date"])
+                updated_file_paths = [Path(i["path"]) for i in fresh_info]
+                
+                fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
+                combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
+                pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
+                
+                st.session_state["last_trained_file"] = up.name
+                st.cache_resource.clear()
+                st.cache_data.clear()
+                st.success("✅ Đã cập nhật xong dữ liệu mới vào Tổng kết & Lịch sử!")
+                st.rerun()
         elif already_trained:
             st.info("ℹ️ File này đã được học. Upload file mới để cập nhật thêm.")
 
