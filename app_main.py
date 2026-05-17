@@ -521,7 +521,7 @@ CACHE_FILE = ROOT / "simulation_cache.pkl"
 
 def get_dir_fingerprint():
     data_dir = ROOT / "datasets"
-    files = list(data_dir.glob("*"))
+    files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"] and not f.name.startswith("~$")]
     hz_str = "_".join(str(x) for x in HORIZONS)
     if not files: return f"empty_{hz_str}"
     return f"{len(files)}_{max(f.stat().st_mtime for f in files)}_{hz_str}"
@@ -543,16 +543,17 @@ file_info = get_sorted_files(fingerprint)
 file_paths = [Path(i["path"]) for i in file_info]
 
 # Load cache
+cache_mismatch = False
 if CACHE_FILE.exists():
     try:
         cache = pd.read_pickle(CACHE_FILE)
-        if cache.get("fp") == fingerprint: combined = cache.get("df")
-        else: combined = None
+        combined = cache.get("df")
+        if cache.get("fp") != fingerprint:
+            cache_mismatch = True
     except: combined = None
 else: combined = None
 
 if combined is None:
-    # Không tự động chạy simulation ở đây nữa để tránh làm chậm việc upload/finetune
     combined = pd.DataFrame()
 
 
@@ -777,6 +778,14 @@ with t1:
 
 
 with t2:
+    if cache_mismatch and not df_view.empty:
+        st.warning("⚠️ Phát hiện dữ liệu mới được upload. Kết quả đánh giá dưới đây chưa bao gồm file mới nhất.")
+        if st.button("📈 Cập nhật Phân tích & Đánh giá sai số mới", key="btn_update_eval_mismatch"):
+            with st.spinner("⏳ Hệ thống đang chạy mô phỏng đối chiếu để tính sai lệch mới..."):
+                combined = run_upload_simulation(str(BUILTIN_CSV), file_paths, CUTOFF_DATE)
+                pd.to_pickle({"fp": fingerprint, "df": combined}, CACHE_FILE)
+                st.rerun()
+
     # Nếu chưa có kết quả simulation, cho phép chạy tại đây
     if df_view.empty and file_paths:
         st.info("📊 Bạn vừa upload dữ liệu mới hoặc đổi mô hình. Nhấn nút bên dưới để cập nhật bảng đánh giá độ chính xác.")
