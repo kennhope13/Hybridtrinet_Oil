@@ -763,6 +763,14 @@ with t1:
         elif already_trained:
             st.info("ℹ️ Dữ liệu từ file này đã được cập nhật thành công vào hệ thống.")
             render_post_upload_predictions(df_new, sel_hz_auto, "Kết quả dự báo nhanh bằng mô hình hiện tại (GUMNet)")
+    else:
+        # Khi không có file nào đang được upload (ví dụ khi chuyển tab hoặc tải lại)
+        # Tự động hiển thị bảng dự báo của file được tải lên gần đây nhất để bảng không bị biến mất!
+        if file_paths:
+            latest_fpath = file_paths[-1]
+            df_latest = load_df(latest_fpath)
+            if not df_latest.empty:
+                render_post_upload_predictions(df_latest, HORIZONS, f"Kết quả dự báo nhanh bằng mô hình hiện tại (GUMNet) cho file gần nhất ({latest_fpath.name})")
 
 
 
