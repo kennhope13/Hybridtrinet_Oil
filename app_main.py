@@ -653,7 +653,7 @@ with t1:
                         # Hiển thị dự báo ngay sau khi train xong
                         st.markdown("---")
                         last_upload_date = df_new[DATE_COL].max()
-                        st.markdown(f"### 🔮 Dự báo {max(sel_hz_auto)} ngày tiếp theo (từ {last_upload_date.strftime('%d/%m/%Y')})")
+                        st.markdown(f"### 🔮 Dự báo chi tiết sau huấn luyện (từ {last_upload_date.strftime('%d/%m/%Y')})")
 
                         # Chuẩn bị lịch sử từ file upload
                         hist_for_pred = pd.concat([base_full_orig, df_new]).drop_duplicates(DATE_COL).sort_values(DATE_COL).tail(500)
@@ -661,45 +661,49 @@ with t1:
 
                         for mname in sel_models:
                             st.markdown(f"**🤖 {mname}**")
-                            # Dùng mốc lớn nhất đã chọn để có đủ ngày hiển thị
-                            h_display = max(sel_hz_auto)
-                            try:
-                                m_h, meta_h, dev_h = load_model(mname, h_display)
-                                if not m_h:
-                                    st.caption(f"⚠️ Chưa có model {mname} h{h_display}. Hãy train trước.")
-                                    continue
-                                _swap_src(MODEL_DEFS[mname]["proj_dir"])
-                                hist_h = hist_for_pred.copy()
-                                missing = [c for c in meta_h["feature_cols"] if c not in hist_h.columns]
-                                for mc in missing:
-                                    if mc in base_full_orig.columns:
-                                        hist_h[mc] = base_full_orig.set_index(DATE_COL).reindex(hist_h[DATE_COL])[mc].values
-                                hist_h = hist_h.ffill().bfill().fillna(0)
+                            # Tạo các tab cho từng mốc dự báo
+                            tabs_h = st.tabs([f"Mốc {h} ngày" for h in sel_hz_auto])
+                            
+                            for idx_h, h_display in enumerate(sel_hz_auto):
+                                with tabs_h[idx_h]:
+                                    try:
+                                        m_h, meta_h, dev_h = load_model(mname, h_display)
+                                        if not m_h:
+                                            st.caption(f"⚠️ Chưa có model {mname} h{h_display}. Hãy train trước.")
+                                            continue
+                                        _swap_src(MODEL_DEFS[mname]["proj_dir"])
+                                        hist_h = hist_for_pred.copy()
+                                        missing = [c for c in meta_h["feature_cols"] if c not in hist_h.columns]
+                                        for mc in missing:
+                                            if mc in base_full_orig.columns:
+                                                hist_h[mc] = base_full_orig.set_index(DATE_COL).reindex(hist_h[DATE_COL])[mc].values
+                                        hist_h = hist_h.ffill().bfill().fillna(0)
 
-                                pred_df = predict_from_df(m_h, meta_h, hist_h, dev_h)
-                                if pred_df.empty:
-                                    st.caption("⚠️ Model không trả về kết quả.")
-                                    continue
+                                        pred_df = predict_from_df(m_h, meta_h, hist_h, dev_h)
+                                        if pred_df.empty:
+                                            st.caption("⚠️ Model không trả về kết quả.")
+                                            continue
 
-                                # Hiển thị từng ngày trong lộ trình dự báo
-                                rows = []
-                                for i, row in pred_df.iterrows():
-                                    if DATE_COL in pred_df.columns:
-                                        ngay = pd.Timestamp(row[DATE_COL]).strftime('%d/%m/%Y (%a)')
-                                    else:
-                                        ngay = (last_upload_date + pd.Timedelta(days=i+1)).strftime('%d/%m/%Y (%a)')
-                                    
-                                    r = {"📅 Ngày": ngay}
-                                    for tgt in TARGET_COLS:
-                                        if tgt in row:
-                                            r[tgt] = f"{float(row[tgt]):,.2f}"
-                                    rows.append(r)
+                                        # Hiển thị từng ngày trong lộ trình dự báo
+                                        rows = []
+                                        for i, row in pred_df.iterrows():
+                                            if DATE_COL in pred_df.columns:
+                                                ngay = pd.Timestamp(row[DATE_COL]).strftime('%d/%m/%Y (%a)')
+                                            else:
+                                                ngay = (last_upload_date + pd.Timedelta(days=i+1)).strftime('%d/%m/%Y (%a)')
+                                            
+                                            r = {"📅 Ngày": ngay}
+                                            for tgt in TARGET_COLS:
+                                                if tgt in row:
+                                                    r[tgt] = f"{float(row[tgt]):,.2f}"
+                                            rows.append(r)
 
-                                if rows:
-                                    safe_dataframe(pd.DataFrame(rows).set_index("📅 Ngày"))
+                                        if rows:
+                                            safe_dataframe(pd.DataFrame(rows).set_index("📅 Ngày"))
 
-                            except Exception as ex:
-                                st.error(f"Lỗi dự báo {mname}: {ex}")
+                                    except Exception as ex:
+                                        st.error(f"Lỗi dự báo {mname} mốc {h_display} ngày: {ex}")
+
 
                         st.markdown("---")
                         if st.button("🔄 Tải lại Dashboard", key="reload_after_train"):
