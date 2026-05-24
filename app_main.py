@@ -694,7 +694,7 @@ else:
 
 
 # Tabs
-t1, t2, t3, t4, t5 = st.tabs(["⬆️ Upload & Dự báo", "🏆 Tổng kết", "📋 Lịch sử upload", "📈 Biểu đồ", "🗃️ Bảng chi tiết"])
+t1, t2, t3, t4 = st.tabs(["⬆️ Upload & Dự báo", "🏆 Tổng kết", "📋 Lịch sử upload", "📈 Biểu đồ"])
 
 with t1:
     # Kiểm tra xem đã có checkpoint chưa
@@ -969,7 +969,3 @@ with t4:
             fig.update_layout(title=f"{tgt} - {sh}", template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-with t5:
-    if not df_view.empty:
-        cols = [c for c in df_view.columns if c != "Ngày thứ"]
-        safe_dataframe(df_view[cols], use_container_width=True)
