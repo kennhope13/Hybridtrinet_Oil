@@ -1,0 +1,5 @@
+venv/
+__pycache__/
+*.pyc
+output.txt
+sim_log.txt

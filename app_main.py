@@ -49,8 +49,9 @@ MODEL_DEFS = {
 
 # === DATA HELPERS ===
 
-def load_df(path):
-    path = Path(path)
+@st.cache_data
+def _cached_load_df(path_str, mtime):
+    path = Path(path_str)
     try:
         if path.suffix.lower() in [".xlsx", ".xls"]:
             df = pd.read_excel(path)
@@ -84,6 +85,13 @@ def load_df(path):
     except Exception as e:
         st.sidebar.error(f"⚠️ Lỗi đọc file {path.name}: {e}")
         return pd.DataFrame()
+
+def load_df(path):
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame()
+    mtime = path.stat().st_mtime
+    return _cached_load_df(str(path), mtime)
 
 def generate_time_features(df):
     if DATE_COL not in df.columns: return df
@@ -510,7 +518,55 @@ def show_live_forecasts(base_full, file_paths, sel_models):
 # === UI ===
 
 st.set_page_config(page_title="Oil Forecast Hub", layout="wide", page_icon="🛢️")
-st.markdown("<style>.block-container { padding-top: 1rem; } h1 { background: linear-gradient(135deg, #00d4aa, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }</style>", unsafe_allow_html=True)
+st.markdown("""
+<style>
+    /* Clean, Modern Spacing */
+    .block-container {
+        padding-top: 1.5rem !important;
+        max-width: 95% !important;
+    }
+    
+    /* Make all components square/blocky, inheriting theme colors */
+    .stButton > button, 
+    div[data-baseweb="select"], 
+    div[data-baseweb="popover"], 
+    .stAlert, 
+    div[data-testid="stDataFrame"], 
+    div[data-testid="stFileUploader"],
+    div[data-testid="stMarkdownContainer"] pre,
+    div[data-baseweb="tabs"] button {
+        border-radius: 4px !important;
+    }
+    
+    /* Enhance buttons for a premium square look */
+    .stButton > button {
+        border: 1px solid rgba(122, 58, 237, 0.2) !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease !important;
+    }
+    
+    /* Subtle hover effect for buttons */
+    .stButton > button:hover {
+        border-color: #7c3aed !important;
+        box-shadow: 0 2px 8px rgba(124, 58, 237, 0.15) !important;
+    }
+
+    /* Clean up file uploader styling */
+    div[data-testid="stFileUploader"] {
+        border: 1.5px dashed rgba(122, 58, 237, 0.2) !important;
+        background-color: rgba(122, 58, 237, 0.01) !important;
+        padding: 10px !important;
+    }
+
+    /* Style the main title with a premium gradient */
+    h1 {
+        background: linear-gradient(135deg, #00d4aa, #7c3aed);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 st.title("🛢️ Oil Forecast – Automated Evaluation Hub")
 
 
@@ -654,20 +710,14 @@ with t1:
 
 
     st.subheader("⬆️ Upload file mới")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1:
-        auto_ft = st.checkbox("🔄 Tự động huấn luyện sau khi tải file", value=True)
-    with c2:
-        sel_hz_auto = st.multiselect("Chọn mốc", HORIZONS, default=HORIZONS)
-
-    with c3:
-        train_mode = st.radio("Chế độ", ["⚡ Finetune", "🔁 Train lại từ đầu"], index=0,
-                              help="Finetune: học tiếp từ checkpoint cũ (nhanh).\nTrain lại từ đầu: xóa checkpoint cũ, học toàn bộ dữ liệu (chính xác hơn nhưng lâu hơn).")
-    force_retrain = (train_mode == "🔁 Train lại từ đầu")
-
     up = st.file_uploader("Chọn file Excel/CSV", type=["xlsx", "xls", "csv"])
     if up:
         tmp = ROOT / "datasets" / up.name
+        # Reset local cache if the user uploads a different file
+        if st.session_state.get("current_uploaded_filename") != up.name:
+            st.session_state["current_uploaded_filename"] = up.name
+            st.session_state["active_upload_predictions"] = None
+            
         with open(tmp, "wb") as f: f.write(up.getbuffer())
         st.success(f"✅ Đã lưu: {up.name}")
         df_new = load_df(tmp)
@@ -676,95 +726,117 @@ with t1:
             st.session_state["last_up_date"] = m_date
             st.info(f"📅 Dữ liệu trong file mới nhất đến: {m_date.strftime('%d/%m/%Y')}")
 
-        # Chỉ train nếu file này chưa được train lần này (tránh lặp vô tận)
-        # Nếu chọn "Train lại từ đầu" thì luôn cho phép train
-        already_trained = (st.session_state.get("last_trained_file") == up.name) and not force_retrain
-            
-        if auto_ft and not already_trained:
-            if not sel_models:
-                st.error("❌ Vui lòng chọn mô hình ở Sidebar!")
-            elif not sel_hz_auto:
-                st.error("❌ Vui lòng chọn ít nhất một mốc thời gian!")
-            else:
-                mode_label = "🔁 TRAIN LẠI TỪ ĐẦU" if force_retrain else "⚡ Finetune"
-                st.warning(f"⏳ {mode_label} — Mốc: {', '.join([str(x)+'d' for x in sel_hz_auto])}...")
-                log_area = st.empty()
-                import subprocess
-                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--new_file", str(tmp),
-                       "--epochs", "50", "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_auto]
-                if force_retrain:
-                    cmd.append("--force_retrain")
-                try:
-
-                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
-                    log_text = ""
-                    for line in process.stdout:
-                        log_text += line
-                        log_area.code("\n".join(log_text.splitlines()[-15:]))
-                    process.wait()
-                    if process.returncode == 0:
-                        st.session_state["last_trained_file"] = up.name
-                        st.cache_resource.clear()
-                        st.cache_data.clear()
-                        log_area.empty() # Ẩn Log sau khi xong
-                        
-                        # --- TỰ ĐỘNG CẬP NHẬT CACHE TỔNG KẾT & LỊCH SỬ ---
-                        with st.spinner("⏳ Đang tự động phân tích & đánh giá sai số để điền dữ liệu cho tab Tổng kết & Lịch sử..."):
-                            data_dir = ROOT / "datasets"
-                            fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
-                            fresh_info = []
-                            for f in fresh_files:
-                                df_f = load_df(f)
-                                if not df_f.empty:
-                                    fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
-                            fresh_info.sort(key=lambda x: x["max_date"])
-                            updated_file_paths = [Path(i["path"]) for i in fresh_info]
-                            
-                            fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
-                            combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
-                            pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
-                        # -------------------------------------------------
-                        
-                        st.success(f"✅ HOÀN TẤT! Đã huấn luyện thành công các mốc: {', '.join([str(x)+'d' for x in sel_hz_auto])}")
-
-
-                        # Hiển thị dự báo ngay sau khi train xong
-                        render_post_upload_predictions(df_new, sel_hz_auto, "Dự báo chi tiết sau huấn luyện")
-
-
-                        st.markdown("---")
-                        if st.button("🔄 Tải lại Dashboard", key="reload_after_train"):
-                            st.rerun()
-
-                    else:
-                        st.error("❌ Có lỗi xảy ra.")
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
-        elif not auto_ft and not already_trained:
-            # Tự động cập nhật cache đánh giá ngay cả khi không chọn tự động train
-            with st.spinner("⏳ Đang tự động phân tích & đánh giá dữ liệu mới..."):
-                data_dir = ROOT / "datasets"
-                fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
-                fresh_info = []
-                for f in fresh_files:
-                    df_f = load_df(f)
-                    if not df_f.empty:
-                        fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
-                fresh_info.sort(key=lambda x: x["max_date"])
-                updated_file_paths = [Path(i["path"]) for i in fresh_info]
-                
-                fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
-                combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
-                pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
-                
-                st.session_state["last_trained_file"] = up.name
-                st.cache_resource.clear()
-                st.cache_data.clear()
-                st.success("✅ Đã cập nhật xong dữ liệu mới vào Tổng kết & Lịch sử!")
+        # --- MANUAL MODE ---
+        st.markdown("### 🛠️ Lựa chọn chức năng thực hiện")
+        c1_man, c2_man, c3_man = st.columns(3)
+        
+        with c1_man:
+            st.markdown("#### 🔮 1. Dự báo nhanh")
+            st.caption("Chạy dự báo nhanh bằng mô hình hiện tại mà không huấn luyện lại.")
+            st.markdown("**Chọn mốc dự báo:**")
+            sel_hz_pred = []
+            cols_pred = st.columns(4)
+            for idx, h in enumerate(HORIZONS):
+                if cols_pred[idx % 4].checkbox(f"{h}d", value=True, key=f"hz_pred_{h}"):
+                    sel_hz_pred.append(h)
+            if st.button("🔮 Chạy dự báo", type="primary", use_container_width=True, key="btn_pred_man"):
+                st.session_state["active_upload_predictions"] = (df_new, sel_hz_pred, f"Kết quả dự báo bằng mô hình hiện tại cho file {up.name}")
                 st.rerun()
-        elif already_trained:
-            st.info("ℹ️ Dữ liệu từ file này đã được cập nhật thành công vào hệ thống.")
-            render_post_upload_predictions(df_new, sel_hz_auto, "Kết quả dự báo nhanh bằng mô hình hiện tại (GUMNet)")
+                
+        with c2_man:
+            st.markdown("#### 🚀 2. Huấn luyện mô hình")
+            st.caption("Huấn luyện thích ứng (Finetune) hoặc Train lại từ đầu với dữ liệu mới.")
+            train_mode_man = st.radio("Chế độ huấn luyện", ["⚡ Finetune", "🔁 Train lại từ đầu"], index=0, key="train_mode_man",
+                                      help="Finetune: học tiếp từ checkpoint cũ (nhanh).\nTrain lại từ đầu: xóa checkpoint cũ, học toàn bộ dữ liệu (chính xác hơn nhưng lâu hơn).")
+            st.markdown("**Chọn mốc huấn luyện:**")
+            sel_hz_train_man = []
+            cols_train = st.columns(4)
+            for idx, h in enumerate(HORIZONS):
+                if cols_train[idx % 4].checkbox(f"{h}d", value=True, key=f"hz_train_{h}"):
+                    sel_hz_train_man.append(h)
+            force_retrain_man = (train_mode_man == "🔁 Train lại từ đầu")
+            
+            if st.button("🚀 Bắt đầu huấn luyện", use_container_width=True, key="btn_train_man"):
+                if not sel_models:
+                    st.error("❌ Vui lòng chọn mô hình ở Sidebar!")
+                elif not sel_hz_train_man:
+                    st.error("❌ Vui lòng chọn ít nhất một mốc thời gian!")
+                else:
+                    mode_label = "🔁 TRAIN LẠI TỪ ĐẦU" if force_retrain_man else "⚡ Finetune"
+                    st.warning(f"⏳ Đang thực hiện {mode_label} — Mốc: {', '.join([str(x)+'d' for x in sel_hz_train_man])}...")
+                    log_area = st.empty()
+                    import subprocess
+                    cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--new_file", str(tmp),
+                           "--epochs", "50", "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_train_man]
+                    if force_retrain_man:
+                        cmd.append("--force_retrain")
+                    try:
+                        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                        log_text = ""
+                        for line in process.stdout:
+                            log_text += line
+                            log_area.code("\n".join(log_text.splitlines()[-15:]))
+                        process.wait()
+                        if process.returncode == 0:
+                            st.session_state["last_trained_file"] = up.name
+                            st.cache_resource.clear()
+                            st.cache_data.clear()
+                            log_area.empty()
+                            
+                            # --- TỰ ĐỘNG CẬP NHẬT CACHE TỔNG KẾT & LỊCH SỬ ---
+                            with st.spinner("⏳ Đang tự động phân tích & đánh giá sai số để điền dữ liệu cho tab Tổng kết & Lịch sử..."):
+                                data_dir = ROOT / "datasets"
+                                fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
+                                fresh_info = []
+                                for f in fresh_files:
+                                    df_f = load_df(f)
+                                    if not df_f.empty:
+                                        fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
+                                fresh_info.sort(key=lambda x: x["max_date"])
+                                updated_file_paths = [Path(i["path"]) for i in fresh_info]
+                                
+                                fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
+                                combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
+                                pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
+                            # -------------------------------------------------
+                            
+                            st.success(f"✅ HOÀN TẤT! Đã huấn luyện thành công các mốc: {', '.join([str(x)+'d' for x in sel_hz_train_man])}")
+                            st.session_state["active_upload_predictions"] = (df_new, sel_hz_train_man, "Dự báo chi tiết sau huấn luyện")
+                            st.rerun()
+                        else:
+                            st.error("❌ Có lỗi xảy ra trong quá trình huấn luyện.")
+                    except Exception as e:
+                        st.error(f"Lỗi: {e}")
+                        
+        with c3_man:
+            st.markdown("#### 📊 3. Phân tích sai số")
+            st.caption("Chạy mô phỏng đối chiếu để tính sai số và cập nhật kết quả vào tab Tổng kết & Lịch sử upload.")
+            if st.button("📊 Chạy Phân tích & Đánh giá", use_container_width=True, key="btn_eval_man"):
+                with st.spinner("⏳ Đang tự động phân tích & đánh giá dữ liệu mới..."):
+                    data_dir = ROOT / "datasets"
+                    fresh_files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"]]
+                    fresh_info = []
+                    for f in fresh_files:
+                        df_f = load_df(f)
+                        if not df_f.empty:
+                            fresh_info.append({"path": str(f), "max_date": df_f[DATE_COL].max()})
+                    fresh_info.sort(key=lambda x: x["max_date"])
+                    updated_file_paths = [Path(i["path"]) for i in fresh_info]
+                    
+                    fresh_fingerprint = f"{fresh_files and len(fresh_files)}_{fresh_files and max(f.stat().st_mtime for f in fresh_files)}_{'_'.join(str(x) for x in HORIZONS)}"
+                    combined_new = run_upload_simulation(str(BUILTIN_CSV), updated_file_paths, CUTOFF_DATE)
+                    pd.to_pickle({"fp": fresh_fingerprint, "df": combined_new}, CACHE_FILE)
+                    
+                    st.session_state["last_trained_file"] = up.name
+                    st.cache_resource.clear()
+                    st.cache_data.clear()
+                    st.success("✅ Đã cập nhật xong dữ liệu mới vào Tổng kết & Lịch sử!")
+                    st.rerun()
+
+        # Hiển thị kết quả dự báo đang có trong state
+        if st.session_state.get("active_upload_predictions") is not None:
+            pred_args = st.session_state["active_upload_predictions"]
+            render_post_upload_predictions(pred_args[0], pred_args[1], pred_args[2])
     else:
         # Khi không có file nào đang được upload (ví dụ khi chuyển tab hoặc tải lại)
         # Tự động hiển thị bảng dự báo của file được tải lên gần đây nhất để bảng không bị biến mất!

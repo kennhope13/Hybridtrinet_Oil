@@ -1,3 +1,6 @@
 [server]
 port = 8502
 # headless = true
+
+[theme]
+primaryColor = "#7c3aed"
