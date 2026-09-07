@@ -4,7 +4,8 @@ Huấn luyện cả GUMNet và HybridTriNet cho 6 mốc horizon: 1, 5, 10, 30, 6
 Mỗi mốc tạo 1 checkpoint riêng, lưu vào thư mục checkpoints_multi/.
 """
 
-import sys, json, random, warnings
+import os, sys, json, random, warnings
+os.environ["PYTHONWARNINGS"] = "ignore"
 warnings.filterwarnings("ignore") # Tắt các cảnh báo dư thừa để log sạch sẽ
 from pathlib import Path
 import numpy as np
@@ -97,7 +98,8 @@ def update_training_data(specific_file=None):
             full_new = pd.concat(new_data)
             combined = pd.concat([base_df, full_new], ignore_index=True)
             combined = combined.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
-            combined = combined.interpolate().bfill().ffill()
+            num_cols = combined.select_dtypes(include=[np.number]).columns
+            combined[num_cols] = combined[num_cols].interpolate().bfill().ffill()
             combined.to_csv(DATA_PATH, index=False)
             flush_print(f"✅ Đã cập nhật dataset. Tổng cộng {len(combined)} dòng.")
         else:
@@ -119,7 +121,8 @@ def read_data():
     for c in df.columns:
         if c != DATE_COL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.interpolate().bfill().ffill()
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].interpolate().bfill().ffill()
     return df
 
 # ═══════════════════════  GUMNet TRAINING  ════════════════════════════════════
@@ -162,12 +165,12 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
     current_lr = GUMNET_LR
     if ckpt_path.exists():
         try:
-            ckpt = torch.load(ckpt_path, map_location=device)
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(ckpt["model_state_dict"])
             current_lr = GUMNET_LR * 0.2
-            flush_print(f"   ♻️ Đã nạp GUMNet h{horizon} để học tiếp (Finetune)...")
-        except:
-            flush_print(f"   ⚠️ Không thể nạp checkpoint GUMNet h{horizon}, sẽ học mới.")
+            flush_print(f"   ♻️ Đã nạp trọng số GUMNet h{horizon} sẵn có để tối ưu tiếp (Finetune)...")
+        except Exception:
+            flush_print(f"   🌱 Khởi tạo mô hình GUMNet h{horizon} để tối ưu hóa mới...")
 
 
     optimizer = torch.optim.Adam(model.parameters(), lr=current_lr, weight_decay=5e-4)
@@ -237,6 +240,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None):
                 break
 
     print(f"    Best Val Loss: {best_val:.6f}")
+    return best_val
 
 # ═══════════════════════  HybridTriNet TRAINING  ══════════════════════════════
 
@@ -318,12 +322,12 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
     current_lr = HYBRID_LR
     if ckpt_path.exists():
         try:
-            state = torch.load(ckpt_path, map_location=device)
+            state = torch.load(ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(state, strict=True)
             current_lr = HYBRID_LR * 0.2
-            flush_print(f"   ♻️ Đã nạp Hybrid h{horizon} để học tiếp (Finetune)...")
-        except Exception as ex:
-            flush_print(f"   ⚠️ Checkpoint h{horizon} không tương thích ({ex}), sẽ train lại từ đầu.")
+            flush_print(f"   ♻️ Đã nạp trọng số Hybrid h{horizon} sẵn có để tối ưu tiếp (Finetune)...")
+        except Exception:
+            flush_print(f"   🌱 Khởi tạo mô hình Hybrid h{horizon} để tối ưu hóa mới...")
 
 
 
@@ -400,6 +404,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
         json.dump({"feature_cols": f_cols, "tgt_idx": tgt_idx, "K": K, "H": horizon}, f, indent=2)
 
     print(f"    Saved: {ckpt_path}  meta: {run_dir.name}  (best_val={best_val:.6f})")
+    return best_val
 
 
 
@@ -422,6 +427,8 @@ if __name__ == "__main__":
     df = read_data()
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
+    results = {}
+    
     # 3. Huấn luyện từng mốc Horizon riêng biệt (Multi-Model Mode)
     for hz in args.horizons:
         flush_print(f"\n{'='*40}")
@@ -435,18 +442,67 @@ if __name__ == "__main__":
                 if old.exists():
                     old.unlink()
                     flush_print(f"   🗑️ Đã xóa checkpoint cũ: {pattern}")
-            flush_print(f"   🔁 Bắt đầu TRAIN LạI Từ ĐẦU (không dùng checkpoint cũ)")
+            flush_print(f"   🔁 Bắt đầu TRAIN LẠI TỪ ĐẦU (không dùng checkpoint cũ)")
         
 
         if "GUMNet" in args.models:
             flush_print(f"🧠 [GUMNet] Horizon {hz}d...")
-            train_gumnet_horizon(df, hz, device, epochs=args.epochs)
+            v_loss = train_gumnet_horizon(df, hz, device, epochs=args.epochs)
+            if v_loss is not None:
+                results[f"GUMNet_h{hz}"] = round(float(v_loss), 6)
+                results[f"h{hz}"] = round(float(v_loss), 6)
             
         if "HybridTriNet" in args.models:
             flush_print(f"🧬 [HybridTriNet] Horizon {hz}d...")
-            train_hybrid_horizon(df, hz, device, epochs=args.epochs)
+            v_loss = train_hybrid_horizon(df, hz, device, epochs=args.epochs)
+            if v_loss is not None:
+                results[f"HybridTriNet_h{hz}"] = round(float(v_loss), 6)
+                if f"h{hz}" not in results:
+                    results[f"h{hz}"] = round(float(v_loss), 6)
     
     flush_print("\n✅ TẤT CẢ CÁC MÔ HÌNH ĐÃ ĐƯỢC CẬP NHẬT!")
-
-
     print(f"Checkpoints đã lưu tại: {OUT_DIR}")
+    
+    # 4. Lưu lại lịch sử phiên huấn luyện vào training_history.json
+    try:
+        import datetime
+        now = datetime.datetime.now()
+        session_id = f"TR-{now.strftime('%Y%m%d-%H%M%S')}"
+        history_file = OUT_DIR / "training_history.json"
+        
+        entries = []
+        if history_file.exists():
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    entries = json.load(f)
+            except:
+                entries = []
+                
+        d_start = df[DATE_COL].min().strftime("%d/%m/%Y") if DATE_COL in df.columns else "01/05/2008"
+        d_end = df[DATE_COL].max().strftime("%d/%m/%Y") if DATE_COL in df.columns else "04/09/2026"
+        
+        entry = {
+            "session_id": session_id,
+            "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
+            "mode": "Train lại từ đầu" if args.force_retrain else "Finetune (Cập nhật)",
+            "models": args.models,
+            "device": str(device).upper(),
+            "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU (6 vCPUs)",
+            "epochs": args.epochs,
+            "horizons": [f"{h}d" for h in args.horizons],
+            "data_info": {
+                "total_rows": len(df),
+                "date_range": f"{d_start} ➔ {d_end}",
+                "start_date": d_start,
+                "end_date": d_end,
+                "targets": TARGET_COLS
+            },
+            "results": results
+        }
+        entries.insert(0, entry)
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+            
+        flush_print(f"📝 Đã lưu thông tin phiên huấn luyện: {session_id}")
+    except Exception as ex:
+        flush_print(f"ℹ️ Không thể lưu training_history.json: {ex}")

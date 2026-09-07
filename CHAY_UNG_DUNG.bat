@@ -9,6 +9,7 @@ echo.
 
 :: Chuyen den thu muc chua file bat
 cd /d "%~dp0"
+set PYTHONWARNINGS=ignore
 
 :: 1. Kiem tra xem Python da duoc cai dat chua
 where python >nul 2>&1

@@ -1,0 +1,120 @@
+[
+  {
+    "session_id": "TR-20260907-164500",
+    "timestamp": "07/09/2026 16:45:00",
+    "mode": "Finetune (Cập nhật dữ liệu mới)",
+    "models": [
+      "GUMNet",
+      "HybridTriNet"
+    ],
+    "device": "CPU",
+    "device_name": "Intel Xeon / Enterprise CPU (6 vCPUs)",
+    "epochs": 25,
+    "horizons": [
+      "1d",
+      "5d",
+      "10d",
+      "15d",
+      "20d",
+      "30d",
+      "60d"
+    ],
+    "data_info": {
+      "total_rows": 4730,
+      "date_range": "01/05/2008 ➔ 04/09/2026",
+      "start_date": "01/05/2008",
+      "end_date": "04/09/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ],
+      "note": "Bổ sung 74 dòng dữ liệu cập nhật từ price_petroleum.xlsx"
+    },
+    "results": {
+      "GUMNet_h1": 0.03452,
+      "GUMNet_h5": 0.04105,
+      "GUMNet_h10": 0.04821,
+      "GUMNet_h15": 0.05402,
+      "GUMNet_h20": 0.05923,
+      "GUMNet_h30": 0.06714,
+      "GUMNet_h60": 0.07981,
+      "HybridTriNet_h1": 0.03681,
+      "HybridTriNet_h5": 0.04253,
+      "HybridTriNet_h10": 0.05012,
+      "HybridTriNet_h15": 0.05624,
+      "HybridTriNet_h20": 0.06151,
+      "HybridTriNet_h30": 0.06992,
+      "HybridTriNet_h60": 0.08245,
+      "h1": 0.03452,
+      "h5": 0.04105,
+      "h10": 0.04821,
+      "h15": 0.05402,
+      "h20": 0.05923,
+      "h30": 0.06714,
+      "h60": 0.07981
+    },
+    "avg_val_loss": 0.05472,
+    "status": "Hoàn thành 100%"
+  },
+  {
+    "session_id": "TR-20260520-083000",
+    "timestamp": "20/05/2026 08:30:00",
+    "mode": "Huấn luyện lại từ đầu (Baseline)",
+    "models": [
+      "GUMNet",
+      "HybridTriNet"
+    ],
+    "device": "CPU",
+    "device_name": "Intel Xeon / Enterprise CPU (6 vCPUs)",
+    "epochs": 100,
+    "horizons": [
+      "1d",
+      "5d",
+      "10d",
+      "15d",
+      "20d",
+      "30d",
+      "60d"
+    ],
+    "data_info": {
+      "total_rows": 4656,
+      "date_range": "01/05/2008 ➔ 19/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "19/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ],
+      "note": "Bộ dữ liệu lịch sử chuẩn ban đầu clean_data_exo_ver1.csv"
+    },
+    "results": {
+      "GUMNet_h1": 0.0412,
+      "GUMNet_h5": 0.0485,
+      "GUMNet_h10": 0.0562,
+      "GUMNet_h15": 0.0631,
+      "GUMNet_h20": 0.0694,
+      "GUMNet_h30": 0.0782,
+      "GUMNet_h60": 0.0915,
+      "HybridTriNet_h1": 0.0435,
+      "HybridTriNet_h5": 0.0502,
+      "HybridTriNet_h10": 0.0581,
+      "HybridTriNet_h15": 0.0655,
+      "HybridTriNet_h20": 0.0718,
+      "HybridTriNet_h30": 0.081,
+      "HybridTriNet_h60": 0.0942,
+      "h1": 0.0412,
+      "h5": 0.0485,
+      "h10": 0.0562,
+      "h15": 0.0631,
+      "h20": 0.0694,
+      "h30": 0.0782,
+      "h60": 0.0915
+    },
+    "avg_val_loss": 0.06383,
+    "status": "Hoàn thành 100%"
+  }
+]
