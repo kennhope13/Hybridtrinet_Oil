@@ -723,7 +723,8 @@ CKPT_DIR = ROOT / "checkpoints_multi"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 DATE_COL = "Ngày"
 HORIZONS = [1, 5, 10, 15, 20, 30, 60]
-CUTOFF_DATE = pd.Timestamp("2025-09-20")
+# CUTOFF_DATE (mốc bắt đầu tính backtest/đánh giá) được tính động ngay bên dưới, sau khi
+# đã đọc được dữ liệu thực tế — xem "CUTOFF_DATE = ..." gần phần load file_info.
 
 MODEL_DEFS = {
     "GUMNet": {
@@ -1111,11 +1112,11 @@ def show_live_forecasts(base_full, file_paths, sel_models, sel_horizons=None):
             # Chuẩn bị dữ liệu lịch sử một lần duy nhất
             history_enriched = generate_time_features(history.copy())
 
-            # Chạy dự báo cho từng mốc với model chuyên biệt
+            # Chạy dự báo cho từng mốc với model chuyên biệt (chỉ các mốc người dùng đã chọn)
             all_preds = []
             pred_cache = {}  # Lưu kết quả để vẽ biểu đồ
 
-            for h in HORIZONS:
+            for h in sorted(sel_horizons):
                 try:
                     model_h, meta_h, device_h = load_model(mname, h)
                     if not model_h:
@@ -1192,7 +1193,7 @@ def show_live_forecasts(base_full, file_paths, sel_models, sel_horizons=None):
                         all_dates = [last_date] + list(dates)
                         all_vals  = [last_val]  + list(vals)
 
-                        dash  = "solid" if h == max(HORIZONS) else "dot"
+                        dash  = "solid" if h == max(pred_cache.keys()) else "dot"
                         width = 2.5    if h == max(HORIZONS) else 1.5
                         fig.add_trace(go.Scatter(
                             x=pd.to_datetime(all_dates), y=all_vals,
@@ -1350,6 +1351,14 @@ def get_sorted_files(fp):
 
 file_info = get_sorted_files(fingerprint)
 file_paths = [Path(i["path"]) for i in file_info]
+
+# CUTOFF_DATE: chỉ lấy các điểm backtest trong 365 ngày gần nhất TÍNH THEO NGÀY MỚI NHẤT
+# đang có trong dữ liệu (dataset gốc + các file đã upload) — tự động trôi theo dữ liệu mới,
+# không còn là một ngày cố định phải nhớ sửa tay mỗi năm.
+_known_max_dates = [base_full_orig[DATE_COL].max()] + [i["max_date"] for i in file_info]
+_known_max_dates = [d for d in _known_max_dates if pd.notna(d)]
+_latest_known_date = max(_known_max_dates) if _known_max_dates else pd.Timestamp.now()
+CUTOFF_DATE = _latest_known_date - pd.Timedelta(days=365)
 
 # Load cache
 cache_mismatch = False
@@ -1863,11 +1872,12 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
                 </div>
                 """, unsafe_allow_html=True)
             with col_k3:
-                d_rows = latest_sess.get("data_info", {}).get("total_rows", "-")
+                d_rows = latest_sess.get("data_info", {}).get("total_rows")
+                d_rows_txt = f"{d_rows:,} dòng" if isinstance(d_rows, (int, float)) else "Chưa rõ"
                 st.markdown(f"""
                 <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc;">
                     <div style="font-size:11px; color:#64748b; font-weight:700; text-transform:uppercase;">Quy mô tập dữ liệu</div>
-                    <div style="font-size:22px; font-weight:800; color:#00ad91; margin-top:2px;">{d_rows:,} dòng</div>
+                    <div style="font-size:22px; font-weight:800; color:#00ad91; margin-top:2px;">{d_rows_txt}</div>
                     <div style="font-size:12px; color:#64748b; margin-top:2px;">{latest_sess.get('data_info', {}).get('date_range', '')}</div>
                 </div>
                 """, unsafe_allow_html=True)
