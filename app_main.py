@@ -23,7 +23,7 @@ import streamlit.components.v1 as components
 import torch
 
 st.set_page_config(
-    page_title="🛢️ Oil Forecast – Automated Evaluation Hub",
+    page_title="Oil Forecast – Automated Evaluation Hub",
     page_icon="🛢️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -169,147 +169,170 @@ html, body, [class*="css"] {
 </style>
 """, unsafe_allow_html=True)
 
-def inject_oil_tour_engine():
+def inject_oil_tour_engine(current_page=""):
+    # `current_page` được nhúng vào cuối script (xem dòng cuối) chỉ để nội dung HTML gửi cho
+    # components.html() LUÔN đổi mỗi khi người dùng chuyển trang. Nếu nội dung y hệt lần trước,
+    # Streamlit sẽ không nạp lại iframe này -> đoạn code "mở tour đang chờ sau khi chuyển trang"
+    # (biến pendingOilTour) sẽ không bao giờ được chạy lại để thực sự bật tour lên.
     tour_script = """
     <script>
     (function() {
         const doc = window.parent.document;
         if (!doc) return;
 
-        // 1. Inject Styles if not already present
-        if (!doc.getElementById('oil-tour-styles')) {
-            const style = doc.createElement('style');
+        // 1. Inject / Update Styles
+        let style = doc.getElementById('oil-tour-styles');
+        if (!style) {
+            style = doc.createElement('style');
             style.id = 'oil-tour-styles';
-            style.textContent = `
-                .oil-tour-layer {
-                    display: none;
-                    position: fixed;
-                    inset: 0;
-                    background: rgba(15, 23, 42, 0.65);
-                    z-index: 2000000000;
-                    transition: opacity 0.25s ease;
-                }
-                .oil-tour-layer.show { display: block !important; }
-                .oil-tour-dialog {
-                    position: fixed;
-                    right: 32px;
-                    bottom: 32px;
-                    width: min(440px, calc(100vw - 40px));
-                    max-height: calc(100vh - 60px);
-                    background: #ffffff;
-                    border-radius: 14px;
-                    padding: 22px 24px;
-                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
-                    border: 1px solid #e2e8f0;
-                    z-index: 2000000001;
-                    font-family: Inter, system-ui, -apple-system, sans-serif;
-                    transition: top 0.25s ease, bottom 0.25s ease, left 0.25s ease, right 0.25s ease;
-                    will-change: top, bottom, left, right;
-                    backface-visibility: hidden;
-                    box-sizing: border-box;
-                    overflow-y: auto;
-                }
-                .oil-welcome-dialog {
-                    position: fixed;
-                    left: 50%;
-                    top: 50%;
-                    transform: translate(-50%, -50%);
-                    width: min(490px, 92vw);
-                    background: #ffffff;
-                    border-radius: 16px;
-                    padding: 28px 32px;
-                    box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5);
-                    border: 1px solid #e2e8f0;
-                    z-index: 2000000001;
-                    font-family: Inter, system-ui, -apple-system, sans-serif;
-                    animation: oilWelcomePop .25s ease;
-                }
-                @keyframes oilWelcomePop {
-                    from { transform: translate(-50%, -46%); opacity: 0; }
-                    to { transform: translate(-50%, -50%); opacity: 1; }
-                }
-                .oil-arrow {
-                    position: fixed;
-                    left: 0;
-                    top: 0;
-                    pointer-events: none;
-                    z-index: 2000000002;
-                    display: none;
-                    transition: top 0.2s ease, left 0.2s ease;
-                    will-change: transform;
-                    backface-visibility: hidden;
-                    animation: oilBounce 0.8s ease-in-out infinite alternate;
-                }
-                @keyframes oilBounce {
-                    0% { transform: translateY(0); }
-                    100% { transform: translateY(8px); }
-                }
-                .oil-tour-focus {
-                    position: relative !important;
-                    z-index: 2000000000 !important;
-                    outline: 3.5px solid #00ad91 !important;
-                    outline-offset: 5px;
-                    border-radius: 10px !important;
-                    box-shadow: 0 0 0 4px rgba(0, 173, 145, 0.25), 0 10px 28px rgba(0, 0, 0, 0.22) !important;
-                    transition: outline 0.2s ease, box-shadow 0.2s ease;
-                }
-                .oil-btn {
-                    border: 0;
-                    border-radius: 8px;
-                    padding: 9px 16px;
-                    font-size: 13px;
-                    font-weight: 600;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                    font-family: inherit;
-                }
-                .oil-btn-ghost {
-                    background: #f1f5f9;
-                    color: #475569;
-                    border: 1px solid #e2e8f0;
-                }
-                .oil-btn-ghost:hover {
-                    background: #e2e8f0;
-                    color: #0f172a;
-                }
-                .oil-btn-primary {
-                    background: linear-gradient(135deg, #00ad91, #008f77);
-                    color: #ffffff;
-                    box-shadow: 0 4px 12px rgba(0, 173, 145, 0.35);
-                }
-                .oil-btn-primary:hover {
-                    filter: brightness(1.1);
-                }
-                .guide-action {
-                    display: block;
-                    width: 100%;
-                    padding: 18px 20px;
-                    text-align: left;
-                    background: #ffffff;
-                    border: 1px solid #e2e8f0;
-                    border-radius: 12px;
-                    cursor: pointer;
-                    color: #1e293b;
-                    font-family: inherit;
-                    transition: all 0.2s ease;
-                    box-shadow: 0 2px 6px rgba(24, 34, 55, 0.04);
-                }
-                .guide-action:hover {
-                    border-color: #00ad91;
-                    box-shadow: 0 6px 18px rgba(0, 173, 145, 0.15);
-                    transform: translateY(-2px);
-                }
-                .guide-action b { display: block; margin: 0 0 4px; font-size: 15px; }
-                .guide-action small { display: block; color: #64748b; font-size: 13px; line-height: 1.4; }
-            `;
             doc.head.appendChild(style);
         }
+        style.textContent = `
+            .oil-tour-layer {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: transparent;
+                z-index: 2000000002;
+                pointer-events: none;
+                transition: opacity 0.25s ease;
+            }
+            .oil-tour-layer.show { display: block !important; }
+            #oil-welcome-layer {
+                background: rgba(15, 23, 42, 0.65) !important;
+                z-index: 2000000010 !important;
+                pointer-events: auto !important;
+            }
+            .oil-spotlight {
+                position: fixed;
+                display: none;
+                pointer-events: none;
+                z-index: 2000000000;
+                border: 3.5px solid #00ad91;
+                border-radius: 12px;
+                box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.65), 0 0 25px rgba(0, 173, 145, 0.85);
+                transition: top 0.22s ease, left 0.22s ease, width 0.22s ease, height 0.22s ease;
+                will-change: top, left, width, height;
+                box-sizing: border-box;
+            }
+            .oil-tour-dialog {
+                position: fixed;
+                right: 32px;
+                bottom: 32px;
+                width: min(440px, calc(100vw - 40px));
+                max-height: calc(100vh - 60px);
+                background: #ffffff !important;
+                color: #0f172a !important;
+                border-radius: 14px;
+                padding: 22px 24px;
+                box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), 0 0 0 1px #e2e8f0 !important;
+                border: 1px solid #e2e8f0;
+                z-index: 2000000003 !important;
+                pointer-events: auto !important;
+                font-family: Inter, system-ui, -apple-system, sans-serif;
+                transition: top 0.25s ease, bottom 0.25s ease, left 0.25s ease, right 0.25s ease;
+                will-change: top, bottom, left, right;
+                backface-visibility: hidden;
+                box-sizing: border-box;
+                overflow-y: auto;
+            }
+            .oil-welcome-dialog {
+                position: fixed;
+                left: 50%;
+                top: 50%;
+                transform: translate(-50%, -50%);
+                width: min(490px, 92vw);
+                background: #ffffff !important;
+                color: #0f172a !important;
+                border-radius: 16px;
+                padding: 28px 32px;
+                box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5);
+                border: 1px solid #e2e8f0;
+                z-index: 2000000011 !important;
+                pointer-events: auto !important;
+                font-family: Inter, system-ui, -apple-system, sans-serif;
+                animation: oilWelcomePop .25s ease;
+            }
+            @keyframes oilWelcomePop {
+                from { transform: translate(-50%, -46%); opacity: 0; }
+                to { transform: translate(-50%, -50%); opacity: 1; }
+            }
+            .oil-arrow {
+                position: fixed;
+                left: 0;
+                top: 0;
+                pointer-events: none;
+                z-index: 2000000004;
+                display: none;
+                transition: top 0.2s ease, left 0.2s ease;
+                will-change: transform;
+                backface-visibility: hidden;
+                animation: oilBounce 0.8s ease-in-out infinite alternate;
+            }
+            @keyframes oilBounce {
+                0% { transform: translateY(0); }
+                100% { transform: translateY(8px); }
+            }
+            .oil-tour-focus {
+                position: relative !important;
+                z-index: 2000000000 !important;
+            }
+            .oil-btn {
+                border: 0;
+                border-radius: 8px;
+                padding: 9px 16px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+                font-family: inherit;
+            }
+            .oil-btn-ghost {
+                background: #f1f5f9;
+                color: #475569;
+                border: 1px solid #e2e8f0;
+            }
+            .oil-btn-ghost:hover {
+                background: #e2e8f0;
+                color: #0f172a;
+            }
+            .oil-btn-primary {
+                background: linear-gradient(135deg, #00ad91, #008f77);
+                color: #ffffff;
+                box-shadow: 0 4px 12px rgba(0, 173, 145, 0.35);
+            }
+            .oil-btn-primary:hover {
+                filter: brightness(1.1);
+            }
+            .guide-action {
+                display: block;
+                width: 100%;
+                padding: 18px 20px;
+                text-align: left;
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                cursor: pointer;
+                color: #1e293b;
+                font-family: inherit;
+                transition: all 0.2s ease;
+                box-shadow: 0 2px 6px rgba(24, 34, 55, 0.04);
+            }
+            .guide-action:hover {
+                border-color: #00ad91;
+                box-shadow: 0 6px 18px rgba(0, 173, 145, 0.15);
+                transform: translateY(-2px);
+            }
+            .guide-action b { display: block; margin: 0 0 4px; font-size: 15px; }
+            .guide-action small { display: block; color: #64748b; font-size: 13px; line-height: 1.4; }
+        `;
 
         // 2. Inject Tour HTML Containers into doc.body if not present
         if (!doc.getElementById('oil-tour-root')) {
             const root = doc.createElement('div');
             root.id = 'oil-tour-root';
             root.innerHTML = `
+                <div class="oil-spotlight" id="oil-spotlight-el"></div>
                 <div class="oil-arrow" id="oil-arrow-el">
                     <svg id="oil-arrow-svg" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#00ad91" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 3px 6px rgba(0,0,0,0.4));">
                         <path d="M12 4v14M18 12l-6 6-6-6"/>
@@ -342,80 +365,79 @@ def inject_oil_tour_engine():
                 </div>
             `;
             doc.body.appendChild(root);
+        }
 
-            doc.getElementById('oil-welcome-later').onclick = function() {
-                doc.getElementById('oil-welcome-layer').classList.remove('show');
-                try { localStorage.setItem('oilForecastTourSeen', 'true'); } catch(e) {}
-            };
-            doc.getElementById('oil-welcome-start').onclick = function() {
-                doc.getElementById('oil-welcome-layer').classList.remove('show');
-                try { localStorage.setItem('oilForecastTourSeen', 'true'); } catch(e) {}
-                window.parent.startOilTour('forecast');
-            };
+        // Đảm bảo oil-spotlight-el luôn tồn tại
+        if (!doc.getElementById('oil-spotlight-el')) {
+            const sp = doc.createElement('div');
+            sp.className = 'oil-spotlight';
+            sp.id = 'oil-spotlight-el';
+            const rootEl = doc.getElementById('oil-tour-root') || doc.body;
+            rootEl.insertBefore(sp, rootEl.firstChild);
         }
 
         // 3. Define Tour Steps with Multi-Selector Fallbacks
         const tours = {
             forecast: [
                 {
-                    title: "1. Cập nhật dữ liệu thị trường",
-                    text: "Kéo thả file Excel (.xlsx) hoặc CSV giá dầu mới nhất vào ô này. Hệ thống tự động nhận diện cột Ngày và chuẩn hóa dữ liệu.",
+                    title: "1. Kéo thả file dữ liệu thị trường",
+                    text: "Kéo thả file Excel (.xlsx) hoặc CSV giá dầu mới nhất vào đây. Hệ thống tự động làm sạch và tính toán ngay dự báo 7 mốc mà không cần bấm thêm nút nào.",
                     selector: '[data-testid="stFileUploader"], .stFileUploader'
                 },
                 {
-                    title: "2. Chọn mốc thời gian dự báo",
-                    text: "Chọn một hoặc nhiều mốc (+1d, +5d, +10d, +15d, +20d, +30d, +60d) để mô hình AI tiến hành suy luận giá thị trường.",
-                    selector: '[data-testid="stMultiSelect"], .stMultiSelect'
+                    title: "2. Giám sát trạng thái & phần cứng",
+                    text: "Kiểm tra phiên bản dữ liệu gần nhất, thiết bị tính toán (GPU/CPU) và tình trạng nạp sẵn sàng 7 mốc dự báo (+1d đến +60d) từ mô hình GUMNet.",
+                    selector: '.hub-notice, [data-testid="stColumn"]:nth-child(2), [data-testid="column"]:nth-child(2)'
                 },
                 {
-                    title: "3. Kết quả dự báo & Đồ thị xu hướng",
-                    text: "Bảng số liệu dự báo chi tiết cho MG95, MG92, DO 0.001%, DO 0.05% cùng đồ thị trực quan cho chuỗi ngày tương lai.",
+                    title: "3. Xem bảng giá dự báo & Biểu đồ xu hướng",
+                    text: "Bảng hiển thị giá dự kiến (USD/thùng hoặc USD/tấn) cho 4 mặt hàng. Rê chuột vào biểu đồ để xem giá từng ngày, bấm tên mốc ở chú giải bên phải để ẩn/hiện đường.",
                     selector: '[data-testid="stDataFrame"], [data-testid="stPlotlyChart"], .table-wrap'
                 },
                 {
-                    title: "4. Xuất báo cáo & Điều hướng",
-                    text: "Bấm nút Xuất CSV/Excel để lưu báo cáo gửi lãnh đạo, hoặc chuyển sang mục 'Đánh giá mô hình' để kiểm tra sai số.",
+                    title: "4. Xuất file báo cáo & Chuyển bước",
+                    text: "Bấm nút 'Xuất Bảng Dự Báo' để tải file Excel/CSV gửi lãnh đạo, hoặc chuyển sang menu 'Đánh giá mô hình' để kiểm tra sai số thực tế.",
                     selector: '[data-testid="stDownloadButton"], [data-testid="stSidebar"], .stDownloadButton'
                 }
             ],
             metrics: [
                 {
-                    title: "1. Chỉ số sai số MAPE & MAE",
-                    text: "Theo dõi sai số giữa giá dự báo và giá thực tế cho 4 mặt hàng MG95, MG92, DO 0.001%, DO 0.05%. Ngưỡng an toàn: MAPE < 7% (Xanh lá).",
+                    title: "1. Đọc chỉ số sai số (MAPE & MAE)",
+                    text: "Theo dõi sai số giữa giá AI đoán và giá thị trường. Ngưỡng an toàn: MAPE < 7% (Xanh lá - Rất tốt). Nếu MAPE > 10% (Đỏ), khuyến nghị sang trang Huấn luyện để Finetune.",
                     selector: '[data-testid="stHorizontalBlock"], [data-testid="column"], [data-testid="stMetric"]'
                 },
                 {
-                    title: "2. Biểu đồ đường sai số theo thời gian",
-                    text: "Quan sát xu hướng sai số qua từng đợt để biết chất lượng dự báo của mô hình AI.",
+                    title: "2. Phân tích chi tiết theo Mốc, Mặt hàng & Xu hướng",
+                    text: "Bảng nhiệt bên dưới phân rã sai số theo từng mốc thời gian và từng loại dầu. Biểu đồ đường cho thấy xu hướng sai số tăng tự nhiên ở các mốc tương lai xa (+60 ngày).",
                     selector: '[data-testid="stPlotlyChart"], [data-testid="stDataFrame"]'
                 }
             ],
             training: [
                 {
-                    title: "1. Chọn cấu hình & Tabs huấn luyện",
-                    text: "Khuyến nghị chọn 'Finetune từ checkpoint' để cập nhật nhanh quy luật mới (chỉ 1–2 phút trên CPU 6 vCPUs).",
+                    title: "1. Chọn cấu hình & Chế độ huấn luyện",
+                    text: "Khuyến nghị chọn 'Finetune từ checkpoint' để cập nhật nhanh quy luật mới (%%HW_TOUR_STR%%). Hệ thống đã tự động chọn số Epochs và đủ cả 7 mốc.",
                     selector: '[data-baseweb="tab-list"], .stTabs'
                 },
                 {
-                    title: "2. Khởi chạy Job Huấn Luyện",
-                    text: "Chọn các mốc horizon và nhấn nút Bắt đầu Job để tiến trình chạy nền không khóa giao diện.",
+                    title: "2. Khởi chạy Job Huấn Luyện ngầm",
+                    text: "Nhấn nút 'Bắt đầu Job' để tiến trình tối ưu hóa chạy độc lập trong nền. Bạn có thể theo dõi tiến độ từng mốc qua thanh phần trăm trực quan.",
                     selector: '[data-testid="stButton"] button, button[kind="primary"]'
                 },
                 {
                     title: "3. Lịch sử & Đối chiếu Benchmarking",
-                    text: "Xem lại số dòng dữ liệu đưa vào qua các phiên và chuyển sang Tab 3 để so sánh % cải thiện độ chính xác cho MG95, MG92, DO 0.001%, DO 0.05%.",
-                    selector: '[data-baseweb="tab-list"] button:nth-child(3), [data-baseweb="tab-list"]'
+                    text: "Xem lại tệp dữ liệu đã nạp tại Tab 2 và chuyển sang Tab 3 để so sánh phiên mới vs phiên cũ — đo lường mức độ cải thiện sai số (% Giảm sai số màu xanh lá).",
+                    selector: '[data-baseweb="tab"]:nth-of-type(3), [role="tab"]:nth-of-type(3), [data-baseweb="tab-list"] button:nth-of-type(3), [data-baseweb="tab-list"]'
                 }
             ],
             history: [
                 {
-                    title: "1. Tra cứu các đợt dữ liệu",
-                    text: "Toàn bộ các tệp Excel/CSV đã nạp vào hệ thống được lưu giữ đầy đủ phục vụ công tác thanh tra, kiểm toán.",
+                    title: "1. Tra cứu danh mục các đợt nạp dữ liệu",
+                    text: "Bảng lưu trữ toàn bộ các tệp Excel/CSV đã nạp vào hệ thống qua từng đợt, phục vụ công tác thanh tra, kiểm toán bất cứ lúc nào.",
                     selector: '[data-testid="stDataFrame"], [data-testid="stSelectbox"]'
                 },
                 {
-                    title: "2. Biểu đồ đối chiếu Dự báo vs Thực tế",
-                    text: "So sánh trực quan giữa đường dự báo (nét đứt) và đường giá thực tế (nét liền) cho từng sản phẩm dầu.",
+                    title: "2. Đối chiếu chi tiết Thực tế vs Dự báo & Xuất file",
+                    text: "Chọn đợt nạp để xem bảng đối chiếu và tải file CSV. Biểu đồ so sánh trực quan giữa đường giá thị trường thực tế (xanh ngọc) và giá AI dự báo (tím nét đứt).",
                     selector: '[data-testid="stPlotlyChart"], .stPlotlyChart'
                 }
             ]
@@ -424,11 +446,43 @@ def inject_oil_tour_engine():
         let activeTour = [];
         let currentIdx = 0;
 
+        // `selectorStr` là danh sách các lựa chọn dự phòng cách nhau bởi dấu phẩy (vd:
+        // '[data-testid="stMetric"], [data-testid="column"]'). doc.querySelector() với chuỗi
+        // nhiều lựa chọn KHÔNG thử lần lượt từng lựa chọn — nó trả về phần tử khớp bất kỳ selector
+        // nào ĐẦU TIÊN THEO THỨ TỰ TRONG DOM, có thể là phần tử hoàn toàn không liên quan ở chỗ
+        // khác trên trang. Hàm này thử TỪNG selector riêng lẻ theo đúng thứ tự ưu tiên đã khai báo,
+        // chỉ chuyển sang selector dự phòng tiếp theo khi selector hiện tại không có phần tử nào.
+        function pickBestElement(selectorStr) {
+            // Chỉ tìm trong vùng NỘI DUNG CHÍNH, loại trừ sidebar — nếu không, các selector
+            // chung chung như [data-testid="stHorizontalBlock"] rất dễ khớp nhầm phần tử nằm
+            // trong sidebar (đứng trước nội dung chính trong thứ tự DOM).
+            const scope = doc.querySelector('[data-testid="stMain"]')
+                || doc.querySelector('section.main')
+                || doc.querySelector('.main')
+                || doc;
+            const parts = selectorStr.split(',').map(s => s.trim()).filter(Boolean);
+            // Lỗi đã xác nhận: ở màn hình hẹp, dải tab (st.tabs) tràn ngang và tab thứ 3+ bị đẩy
+            // ra ngoài vùng nhìn thấy dù DOM vẫn có kích thước (height > 0) — trước đây coi đó là
+            // "tìm thấy" nên không thử fallback tiếp, khiến khung sáng/mũi tên trỏ vào chỗ nằm
+            // ngoài màn hình. Giờ chỉ chấp nhận phần tử khi nó thực sự cắt ngang vùng nhìn thấy
+            // theo chiều ngang; nếu không, thử tiếp selector dự phòng kế tiếp trong danh sách.
+            for (const sel of parts) {
+                try {
+                    const el = scope.querySelector(sel);
+                    if (!el) continue;
+                    const r = el.getBoundingClientRect();
+                    const visibleWidth = window.parent.innerWidth || document.documentElement.clientWidth;
+                    if (r.height > 0 && r.right > 0 && r.left < visibleWidth) return el;
+                } catch (e) { /* selector không hợp lệ trong tài liệu này, bỏ qua */ }
+            }
+            return null;
+        }
+
         function waitForTargetElement(selector, callback, maxTries = 30, interval = 120) {
             let tries = 0;
             function check() {
-                const el = doc.querySelector(selector);
-                if (el && el.getBoundingClientRect().height > 0) {
+                const el = pickBestElement(selector);
+                if (el) {
                     callback(el);
                 } else if (++tries < maxTries) {
                     setTimeout(check, interval);
@@ -443,10 +497,14 @@ def inject_oil_tour_engine():
             const arrow = doc.getElementById('oil-arrow-el');
             const arrowSvgPath = doc.querySelector('#oil-arrow-svg path');
             const dialog = doc.querySelector('.oil-tour-dialog');
+            const spotlight = doc.getElementById('oil-spotlight-el');
+            const tourLayer = doc.getElementById('oil-tour-layer');
             if (!dialog) return;
 
             if (!targetEl) {
                 if (arrow) arrow.style.display = 'none';
+                if (spotlight) spotlight.style.display = 'none';
+                if (tourLayer) tourLayer.style.background = 'rgba(15, 23, 42, 0.65)';
                 dialog.style.top = 'auto';
                 dialog.style.bottom = '28px';
                 dialog.style.left = 'auto';
@@ -455,8 +513,24 @@ def inject_oil_tour_engine():
             }
 
             const r = targetEl.getBoundingClientRect();
-            const vh = window.innerHeight;
-            const vw = window.innerWidth;
+            // Cập nhật vị trí và kích thước của Spotlight Cutout Box
+            if (spotlight) {
+                const pad = 6;
+                spotlight.style.display = 'block';
+                spotlight.style.top = (r.top - pad) + 'px';
+                spotlight.style.left = (r.left - pad) + 'px';
+                spotlight.style.width = (r.width + pad * 2) + 'px';
+                spotlight.style.height = (r.height + pad * 2) + 'px';
+            }
+            if (tourLayer) {
+                tourLayer.style.background = 'transparent';
+            }
+
+            // QUAN TRỌNG: script này chạy trong khung ẩn kích thước 0x0 (components.html height=0
+            // width=0), nên window.innerWidth/innerHeight của CHÍNH khung này luôn xấp xỉ 0 — phải
+            // lấy từ cửa sổ thật của người dùng (window.parent) thì công thức định vị mới đúng.
+            const vh = window.parent.innerHeight;
+            const vw = window.parent.innerWidth;
 
             // 1. VỊ TRÍ HỘP THOẠI HƯỚNG DẪN THÔNG MINH (Không bị che, không đè lên phần tử được trỏ)
             const targetInBottomHalf = r.top > (vh * 0.42) || r.bottom > (vh * 0.72);
@@ -504,7 +578,14 @@ def inject_oil_tour_engine():
 
         function showStep(idx) {
             const prev = doc.querySelector('.oil-tour-focus');
-            if (prev) prev.classList.remove('oil-tour-focus');
+            if (prev) {
+                prev.classList.remove('oil-tour-focus');
+                prev.style.removeProperty('outline-width');
+                prev.style.removeProperty('outline-style');
+                prev.style.removeProperty('outline-color');
+                prev.style.removeProperty('outline-offset');
+                prev.style.removeProperty('box-shadow');
+            }
 
             if (idx >= activeTour.length) {
                 endTour();
@@ -521,8 +602,13 @@ def inject_oil_tour_engine():
             waitForTargetElement(step.selector, function(targetEl) {
                 if (targetEl) {
                     targetEl.classList.add('oil-tour-focus');
+                    if (document.activeElement === targetEl && typeof targetEl.blur === 'function') {
+                        targetEl.blur();
+                    }
                     targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    setTimeout(() => positionDialogAndArrow(targetEl), 180);
+                    positionDialogAndArrow(targetEl);
+                    setTimeout(() => positionDialogAndArrow(targetEl), 150);
+                    setTimeout(() => positionDialogAndArrow(targetEl), 350);
                 } else {
                     positionDialogAndArrow(null);
                 }
@@ -531,46 +617,57 @@ def inject_oil_tour_engine():
 
         function endTour() {
             const prev = doc.querySelector('.oil-tour-focus');
-            if (prev) prev.classList.remove('oil-tour-focus');
+            if (prev) {
+                prev.classList.remove('oil-tour-focus');
+                prev.style.removeProperty('outline-width');
+                prev.style.removeProperty('outline-style');
+                prev.style.removeProperty('outline-color');
+                prev.style.removeProperty('outline-offset');
+                prev.style.removeProperty('box-shadow');
+            }
+            const spotlight = doc.getElementById('oil-spotlight-el');
+            if (spotlight) spotlight.style.display = 'none';
             const layer = doc.getElementById('oil-tour-layer');
-            if (layer) layer.classList.remove('show');
+            if (layer) {
+                layer.classList.remove('show');
+                layer.style.background = 'transparent';
+            }
             const arrow = doc.getElementById('oil-arrow-el');
             if (arrow) arrow.style.display = 'none';
+            activeTour = [];
+            currentIdx = 0;
         }
-
-        doc.getElementById('oil-tour-skip').onclick = endTour;
-        doc.getElementById('oil-tour-next').onclick = function() {
-            currentIdx++;
-            showStep(currentIdx);
-        };
 
         // Lắng nghe resize và scroll để tự điều chỉnh tọa độ
         function updateActivePositions() {
             if (activeTour.length > 0 && currentIdx < activeTour.length) {
                 const step = activeTour[currentIdx];
-                const targetEl = doc.querySelector(step.selector);
+                const targetEl = pickBestElement(step.selector);
                 positionDialogAndArrow(targetEl);
             }
         }
         // Script này được components.html() nhúng lại mỗi lần Streamlit rerun (mọi thao tác
-        // click/upload/đổi trang). Luôn cập nhật con trỏ hàm mới nhất (rẻ, không tích lũy),
-        // nhưng chỉ gắn addEventListener đúng MỘT lần lên window.parent.document để tránh rò rỉ
-        // listener chồng chất qua mỗi lần rerun.
-        window.parent.__oilUpdatePositions = updateActivePositions;
-        if (!doc.__oilTourListenersBound) {
-            doc.__oilTourListenersBound = true;
-            window.addEventListener('resize', function() {
-                if (window.parent.__oilUpdatePositions) window.parent.__oilUpdatePositions();
-            });
-            doc.addEventListener('scroll', function() {
-                if (window.parent.__oilUpdatePositions) window.parent.__oilUpdatePositions();
-            }, true);
+        // click/upload/đổi trang), và khung ẩn (iframe) cũ bị hủy mỗi lần như vậy. Listener gắn
+        // từ lần chạy trước thuộc về ngữ cảnh JS đã bị hủy nên gọi vào nó không còn tác dụng dù
+        // vẫn còn trong danh sách listener của window/document -> phải gỡ rồi gắn lại mỗi lần.
+        if (doc.__oilTourResizeHandler) {
+            window.parent.removeEventListener('resize', doc.__oilTourResizeHandler);
         }
+        if (doc.__oilTourScrollHandler) {
+            doc.removeEventListener('scroll', doc.__oilTourScrollHandler, true);
+        }
+        doc.__oilTourResizeHandler = function() { updateActivePositions(); };
+        doc.__oilTourScrollHandler = function() { updateActivePositions(); };
+        window.parent.addEventListener('resize', doc.__oilTourResizeHandler);
+        doc.addEventListener('scroll', doc.__oilTourScrollHandler, true);
 
         function runTourDirect(tourKey) {
             activeTour = tours[tourKey] || tours['forecast'];
             currentIdx = 0;
-            doc.getElementById('oil-tour-layer').classList.add('show');
+            const wLayer = doc.getElementById('oil-welcome-layer');
+            if (wLayer) wLayer.classList.remove('show');
+            const tLayer = doc.getElementById('oil-tour-layer');
+            if (tLayer) tLayer.classList.add('show');
             showStep(0);
         }
 
@@ -616,23 +713,66 @@ def inject_oil_tour_engine():
 
         window.parent.replayOnboarding = window.replayOnboarding = function() {
             try { localStorage.removeItem('oilForecastTourSeen'); } catch(e) {}
-            doc.getElementById('oil-welcome-layer').classList.add('show');
+            const wLayer = doc.getElementById('oil-welcome-layer');
+            if (wLayer) wLayer.classList.add('show');
         };
 
-        // Event delegation on doc for cards and buttons (gắn một lần duy nhất, xem giải thích ở trên)
-        if (!doc.__oilTourClickBound) {
-            doc.__oilTourClickBound = true;
-            doc.addEventListener('click', function(e) {
-                const tourBtn = e.target.closest('[data-oil-tour]');
-                if (tourBtn) {
-                    const tourKey = tourBtn.getAttribute('data-oil-tour');
-                    window.parent.startOilTour(tourKey);
-                }
-                if (e.target.closest('#oil-replay-btn')) {
-                    window.parent.replayOnboarding();
-                }
-            });
+        // Event delegation on doc cho toàn bộ tương tác của Tour và Popup Chào mừng.
+        // QUAN TRỌNG: mỗi lần Streamlit rerun, khung ẩn (iframe) này bị hủy và tạo mới, nên
+        // listener được gắn từ lần chạy TRƯỚC thực chất đã "chết" (thuộc ngữ cảnh JS đã bị hủy,
+        // gọi vào nó không còn tác dụng dù vẫn còn nằm trong danh sách listener của document).
+        // Vì vậy KHÔNG được chỉ gắn một lần duy nhất (sẽ bị kẹt với listener chết mãi mãi) —
+        // phải gỡ listener cũ rồi gắn lại listener mới (luôn "sống") ở mỗi lần chạy.
+        if (doc.__oilTourClickHandler) {
+            doc.removeEventListener('click', doc.__oilTourClickHandler, true);
         }
+        doc.__oilTourClickHandler = function(e) {
+            // 1. Nút "Để sau" trên popup chào mừng
+            if (e.target.closest('#oil-welcome-later')) {
+                const wLayer = doc.getElementById('oil-welcome-layer');
+                if (wLayer) wLayer.classList.remove('show');
+                try { localStorage.setItem('oilForecastTourSeen', 'true'); } catch(err) {}
+                return;
+            }
+            // 2. Nút "Bắt đầu hướng dẫn ➔" trên popup chào mừng
+            if (e.target.closest('#oil-welcome-start')) {
+                const wLayer = doc.getElementById('oil-welcome-layer');
+                if (wLayer) wLayer.classList.remove('show');
+                try { localStorage.setItem('oilForecastTourSeen', 'true'); } catch(err) {}
+                window.parent.startOilTour('forecast');
+                return;
+            }
+            // 3. Click ra ngoài backdrop của popup chào mừng để đóng
+            if (e.target.id === 'oil-welcome-layer') {
+                e.target.classList.remove('show');
+                try { localStorage.setItem('oilForecastTourSeen', 'true'); } catch(err) {}
+                return;
+            }
+            // 4. Nút "Bỏ qua" trên hộp thoại tour
+            if (e.target.closest('#oil-tour-skip')) {
+                endTour();
+                return;
+            }
+            // 5. Nút "Tiếp theo ➔" / "Hoàn tất ✓" trên hộp thoại tour
+            if (e.target.closest('#oil-tour-next')) {
+                currentIdx++;
+                showStep(currentIdx);
+                return;
+            }
+            // 6. Các thẻ bài học trên Trang Hướng dẫn (data-oil-tour)
+            const tourBtn = e.target.closest('[data-oil-tour]');
+            if (tourBtn) {
+                const tourKey = tourBtn.getAttribute('data-oil-tour');
+                window.parent.startOilTour(tourKey);
+                return;
+            }
+            // 7. Nút "↺ Xem lại thông báo chào mừng & hướng dẫn từ đầu"
+            if (e.target.closest('#oil-replay-btn')) {
+                window.parent.replayOnboarding();
+                return;
+            }
+        };
+        doc.addEventListener('click', doc.__oilTourClickHandler, true);
 
         // Check if there is a pending tour after page switch
         const pending = sessionStorage.getItem('pendingOilTour');
@@ -651,10 +791,12 @@ def inject_oil_tour_engine():
         } catch(e) {}
     })();
     </script>
+    <!-- current_page: """ + str(current_page) + """ -->
     """
+    _is_gpu = torch.cuda.is_available()
+    _hw_tour_str = "tốc độ tối ưu cực nhanh 10–20 giây/mốc trên GPU NVIDIA CUDA" if _is_gpu else "khoảng 1–2 phút/mốc trên CPU 6 vCPUs"
+    tour_script = tour_script.replace("%%HW_TOUR_STR%%", _hw_tour_str)
     components.html(tour_script, height=0, width=0)
-
-inject_oil_tour_engine()
 
 # Hàm hiển thị DataFrame an toàn để tránh lỗi DLL Blocked, PyArrow ArrowTypeError và triệt tiêu warning
 def safe_dataframe(df, **kwargs):
@@ -730,6 +872,13 @@ MODEL_DEFS = {
     "GUMNet": {
         "proj_dir": ROOT / "oil_forecast_research_new-main",
         "mod": "src.model.model", "cls": "GUMNet", "kind": "quantile",
+    },
+    # Lỗi #14 (đã xác nhận): sidebar cho chọn "HybridTriNet" nhưng MODEL_DEFS trước đây thiếu
+    # hẳn khai báo này -> load_model("HybridTriNet", h) luôn thất bại (bắt bởi try/except nên
+    # không crash cả app, nhưng âm thầm không bao giờ ra kết quả dự báo).
+    "HybridTriNet": {
+        "proj_dir": ROOT / "Hybridtrinet_Oil",
+        "mod": "src.model.hybrid_trinet", "cls": "HybridTriNet", "kind": "point",
     },
 }
 
@@ -889,12 +1038,12 @@ def predict_from_df(model, meta, df, device):
     t_cols = meta["target_cols"]
     n_tgt  = len(t_cols)
 
-    # Chuẩn bị đầu vào
-    available = [c for c in f_cols if c in df.columns]
-    X = df[available].values
-    if len(available) < len(f_cols):
-        pad = np.zeros((len(X), len(f_cols) - len(available)))
-        X = np.hstack([X, pad])
+    # Chuẩn bị đầu vào — Lỗi #19 (đã xác nhận): cách cũ lọc ra các cột SẴN CÓ (giữ đúng thứ tự
+    # nhưng bỏ hẳn cột thiếu) rồi đệm số 0 vào CUỐI mảng, làm lệch toàn bộ vị trí cột nếu thiếu
+    # bất kỳ cột nào ở giữa danh sách feature_cols — model nhận nhầm giá trị của cột này vào vị
+    # trí của cột khác, dự báo sai lệch nghiêm trọng. `reindex` giữ đúng vị trí từng cột theo
+    # đúng thứ tự f_cols, cột nào thiếu thì điền 0 ĐÚNG VỊ TRÍ của nó, không dịch chuyển gì cả.
+    X = df.reindex(columns=f_cols, fill_value=0.0).values
 
     if "feature_scaler" in meta:
         X = meta["feature_scaler"].transform(X)
@@ -942,7 +1091,12 @@ def predict_from_df(model, meta, df, device):
 
 # === SIMULATION ENGINE ===
 
-def run_upload_simulation(base_path, upload_files, start_date):
+def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None):
+    # Lỗi #13 (đã xác nhận): trước đây dùng biến `sel_horizons` mà hàm này không nhận làm tham
+    # số và cũng không phải biến global -> NameError mỗi khi có dữ liệu mới cần backtest, bị
+    # nuốt bởi except bên dưới khiến toàn bộ tính năng "Đánh giá mô hình" luôn thất bại âm thầm.
+    if sel_horizons is None or len(sel_horizons) == 0:
+        sel_horizons = HORIZONS
     base_full = load_df(base_path)
     base = base_full[base_full[DATE_COL] < start_date].copy()
     all_records = []
@@ -1162,6 +1316,7 @@ def show_live_forecasts(base_full, file_paths, sel_models, sel_horizons=None):
             # Hiển thị bảng tóm tắt
             if all_preds:
                 st.markdown("#### 📋 Bảng tổng hợp dự báo đa mốc thời gian")
+                st.caption("💡 **Cách xem:** Số liệu biểu thị mức giá dự kiến theo đơn vị **USD/thùng** (MG95, MG92) và **USD/tấn** (DO). Bấm nút tải CSV bên dưới để xuất báo cáo gửi lãnh đạo.")
                 df_preds_export = pd.DataFrame(all_preds)
                 safe_dataframe(df_preds_export.set_index("Ngày dự đoán"))
                 
@@ -1177,6 +1332,7 @@ def show_live_forecasts(base_full, file_paths, sel_models, sel_horizons=None):
             # Vẽ biểu đồ lộ trình cho từng mặt hàng
             if pred_cache:
                 st.markdown(f"**📈 Biểu đồ so sánh các chân trời dự báo ({mname})**")
+                st.caption("💡 **Cách tương tác:** Bấm vào tên mốc ở chú giải bên phải để ẩn/hiện từng đường; rê chuột vào các điểm để xem giá cụ thể; kéo chuột trên biểu đồ để phóng to (zoom in).")
                 for tgt in TARGET_COLS:
                     fig = go.Figure()
                     last_val = float(last_prices[tgt]) if tgt in last_prices else 0
@@ -1233,6 +1389,59 @@ st.markdown("""
     div[data-testid="stDataFrame"], 
     div[data-testid="stFileUploader"] {
         border-radius: 8px !important;
+    }
+    /* Khung upload to hơn, có icon + chữ hướng dẫn tiếng Việt (theo đúng frontend_mockup.html)
+       thay cho giao diện mặc định của Streamlit — CSS thuần, không dùng JS nên không bị lỗi
+       "không đồng bộ sau khi rerun" như các chỗ đã từng gặp trong dự án này. */
+    section[data-testid="stFileUploaderDropzone"] {
+        min-height: 150px !important;
+        border-radius: 10px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 4px !important;
+        text-align: center !important;
+    }
+    section[data-testid="stFileUploaderDropzone"]::before {
+        content: "⇧";
+        font-size: 26px;
+        color: #00ad91;
+        font-weight: 700;
+        order: -3;
+    }
+    section[data-testid="stFileUploaderDropzone"]::after {
+        content: "Kéo thả file vào đây";
+        font-size: 14px;
+        font-weight: 600;
+        color: #1e293b;
+        order: -2;
+    }
+    /* Ẩn icon nhỏ mặc định trong nút (đã có icon lớn ở trên), đổi chữ nút "Upload" -> "Chọn file dữ liệu" */
+    section[data-testid="stFileUploaderDropzone"] span[data-testid="stIconMaterial"] {
+        display: none !important;
+    }
+    section[data-testid="stFileUploaderDropzone"] button[data-testid="stBaseButton-secondary"] p {
+        font-size: 0 !important;
+    }
+    section[data-testid="stFileUploaderDropzone"] button[data-testid="stBaseButton-secondary"] p::after {
+        content: "Chọn file dữ liệu";
+        font-size: 13px !important;
+        font-weight: 600;
+    }
+    /* "200MB per file..." đã có sẵn ở ô "Dung lượng tối đa" bên dưới nên ẩn dòng trùng lặp này đi,
+       thay bằng phụ đề "hoặc bấm để chọn file từ máy tính" đúng theo bản thiết kế */
+    div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        font-size: 0 !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] span::after {
+        content: "hoặc bấm để chọn file từ máy tính";
+        font-size: 12.5px !important;
+        color: #64748b;
+        order: -1;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] {
+        order: -1;
     }
     
     /* Elegant buttons */
@@ -1296,6 +1505,11 @@ def _pid_alive(pid):
         return True  # Tiến trình tồn tại nhưng khác quyền truy cập
     except OSError:
         return False
+    except Exception:
+        # Trên Windows, os.kill(pid, 0) với PID đã chết đôi khi ném SystemError thay vì
+        # OSError thông thường (đã bắt gặp thật khi kiểm thử ở train_all_horizons.py) —
+        # coi như không còn sống thay vì để lỗi rơi ra ngoài.
+        return False
 
 def get_active_training_lock():
     """Trả về dict thông tin job đang chạy nếu lock còn hiệu lực, ngược lại None (và tự dọn lock rác)."""
@@ -1315,9 +1529,13 @@ def get_active_training_lock():
         pass
     return None
 
-def acquire_training_lock(models, horizons):
+def acquire_training_lock(models, horizons, pid=None):
+    # Lỗi #16 (đã xác nhận): trước đây luôn ghi os.getpid() — PID của chính tiến trình Streamlit
+    # server (luôn sống), không phải PID của tiến trình huấn luyện con thật (subprocess.Popen).
+    # Cho phép truyền pid thật vào để _pid_alive() kiểm tra đúng đối tượng; khi chưa có subprocess
+    # (giữ chỗ trước khi Popen chạy) thì tạm dùng os.getpid() để tránh race giữa 2 người dùng.
     TRAIN_LOCK_FILE.write_text(json.dumps({
-        "pid": os.getpid(),
+        "pid": pid if pid is not None else os.getpid(),
         "models": models,
         "horizons": horizons,
         "started_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1379,29 +1597,44 @@ if combined is None:
 # 1. BẢNG ĐIỀU KHIỂN BÊN TRÁI (SIDEBAR)
 # ==========================================
 st.sidebar.markdown("""
-<div style="display:flex; align-items:center; gap:10px; font-weight:800; font-size:15px; margin-bottom:16px; line-height:1.35;">
-    <span style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:8px; background:linear-gradient(135deg,#00ad91,#39cfb0); color:#07241f; font-size:16px; flex-shrink:0;">🛢️</span>
-    <span>Oil Forecast – Automated Evaluation Hub</span>
+<div style="display:flex; align-items:center; gap:10px; padding:12px 12px 13px; border-radius:10px; margin-bottom:16px; background:linear-gradient(135deg, #00ad91 0%, #6954d9 100%);">
+    <span style="flex:none; width:34px; height:34px; border-radius:9px; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; font-size:18px;">🛢️</span>
+    <div style="line-height:1.3;">
+        <b style="display:block; font-size:13.5px; font-weight:800; color:#ffffff; letter-spacing:-0.01em;">Oil Forecast Hub</b>
+        <span style="font-size:10px; font-weight:600; color:rgba(255,255,255,0.85); letter-spacing:0.03em; text-transform:uppercase;">Automated Evaluation</span>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 st.sidebar.caption("KHU VỰC LÀM VIỆC")
+NAV_OPTIONS = [
+    "◈  Dự báo",
+    "▦  Đánh giá mô hình",
+    "◷  Lịch sử & Xuất dữ liệu",
+    "⚙  Huấn luyện mô hình",
+    "❓  Hướng dẫn sử dụng"
+]
 nav_choice = st.sidebar.radio(
     "Điều hướng",
-    [
-        "◈  Dự báo",
-        "▦  Đánh giá mô hình",
-        "◷  Lịch sử & Xuất dữ liệu",
-        "⚙  Huấn luyện mô hình",
-        "❓  Hướng dẫn sử dụng"
-    ],
+    NAV_OPTIONS,
+    key="main_nav_radio",
     label_visibility="collapsed"
 )
 
+# Gọi ở đây (sau khi đã biết đang ở trang nào) thay vì gọi tuốt ở đầu file: nội dung script
+# nhúng đổi theo nav_choice nên buộc Streamlit phải nạp lại đúng lúc chuyển trang.
+inject_oil_tour_engine(nav_choice)
+
 st.sidebar.markdown("---")
-st.sidebar.caption("CẤU HÌNH MÔ HÌNH")
-sel_model_choice = st.sidebar.radio("Mô hình AI:", ["GUMNet (Khuyên dùng)", "HybridTriNet"], index=0, label_visibility="collapsed")
-sel_models = ["GUMNet"] if "GUMNet" in sel_model_choice else ["HybridTriNet"]
+st.sidebar.caption("MÔ HÌNH DỰ BÁO")
+st.sidebar.markdown("""
+<div style="padding:10px 12px; border-radius:8px; background:#eaf5f4; border:1px solid #bcebdc; font-size:12.5px;">
+    <div style="color:#116d5c; font-size:11px; margin-bottom:2px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">ĐỘNG CƠ AI CHUẨN HÓA:</div>
+    <b style="color:#075f57; font-size:13.5px;">🧠 GUMNet Enterprise</b>
+    <div style="color:#116d5c; font-size:11px; margin-top:3px;">✓ Sẵn sàng 7/7 mốc thời gian (Độ chính xác cao)</div>
+</div>
+""", unsafe_allow_html=True)
+sel_models = ["GUMNet"]
 
 st.sidebar.markdown("---")
 
@@ -1464,7 +1697,13 @@ if nav_choice == "◈  Dự báo":
     col_input, col_status = st.columns([1.25, 0.75])
     
     with col_input:
-        st.markdown("#### 1. Cập nhật dữ liệu thị trường")
+        card_input = st.container(border=True)  # st.container(border=True): khung card THẬT của
+        # Streamlit, bọc đúng các widget bên trong (kể cả st.file_uploader) — an toàn hơn nhiều so
+        # với việc tự mở/đóng thẻ <div> bằng st.markdown rồi hy vọng nó bao đúng các widget khác,
+        # vì mỗi lệnh st.markdown/st.file_uploader render vào 1 container DOM riêng của Streamlit,
+        # <div> mở ở lệnh này KHÔNG thực sự bao được widget ở lệnh khác (dễ vỡ layout không báo lỗi).
+    with card_input:
+        st.markdown("#### Cập nhật dữ liệu thị trường")
         st.caption("Tải tệp Excel (.xlsx, .xls) hoặc CSV chứa cột Ngày và giá thị trường:")
         up = st.file_uploader("Upload file", type=["xlsx", "xls", "csv"], key="uploader_main", label_visibility="collapsed")
         active_file_paths = list(file_paths)
@@ -1477,11 +1716,49 @@ if nav_choice == "◈  Dự báo":
                 st.success(f"✅ Đã tiếp nhận tệp tin: **{up.name}** (Dữ liệu đến ngày: **{m_date.strftime('%d/%m/%Y')}**)")
                 if tmp not in active_file_paths:
                     active_file_paths.append(tmp)
-        
-        st.markdown("#### 2. Chọn mốc thời gian cần dự báo")
-        sel_hz_view = st.multiselect("Mốc dự báo", HORIZONS, default=HORIZONS, format_func=lambda h: f"{h} ngày", label_visibility="collapsed")
-        
+
+                # Việc A: gợi ý thông minh khi phát hiện dữ liệu MỚI hơn ngày hệ thống đang có
+                # (_latest_known_date đã tính ở trên, TRƯỚC khi file này được ghi vào datasets/).
+                if pd.notna(m_date) and m_date > _latest_known_date:
+                    st.info(
+                        f"🆕 **Phát hiện dữ liệu mới đến ngày {m_date.strftime('%d/%m/%Y')}** "
+                        f"(hệ thống trước đó chỉ có đến {_latest_known_date.strftime('%d/%m/%Y')}). "
+                        "Bạn có thể xem thử dự báo ngay bên dưới, hoặc huấn luyện lại (Finetune) "
+                        "để mô hình cập nhật theo dữ liệu mới nhất — không bắt buộc."
+                    )
+                    if st.button("⚡ Chuyển sang Huấn luyện để Finetune ngay", key="btn_goto_train_from_upload"):
+                        st.session_state["main_nav_radio"] = "⚙  Huấn luyện mô hình"
+                        st.rerun()
+
+        # Trước đây có ô multiselect cho người dùng bớt/thêm mốc trước khi tính — nhưng việc
+        # tính đủ 7 mốc chỉ mất chưa tới 1 giây, và người dùng không thể "thêm/bớt" mốc thật sự
+        # (checkpoint chỉ có sẵn đúng 7 mốc cố định) nên ô chọn dễ gây hiểu lầm (tưởng lọc để
+        # chạy nhanh hơn) và hay bị bấm nhầm dấu "x" làm mất mốc. Giờ luôn tính đủ cả 7 mốc,
+        # người dùng muốn xem/ẩn mốc nào thì bấm ngay vào chú giải (legend) trên biểu đồ bên dưới
+        # (nhắc lại ở ngay phần biểu đồ, xem show_live_forecasts()).
+        sel_hz_view = HORIZONS
+
+        # Lấp khoảng trống cho card này cân chiều cao với card "Trạng thái hệ thống" bên cạnh.
+        st.markdown("""
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12px; margin-top:14px; margin-bottom:12px;">
+            <div style="background:#f8fafc; border-radius:8px; padding:10px 12px;">
+                <div style="color:#64748b; margin-bottom:2px;">Định dạng hỗ trợ</div>
+                <div style="font-weight:600;">XLSX, XLS, CSV</div>
+            </div>
+            <div style="background:#f8fafc; border-radius:8px; padding:10px 12px;">
+                <div style="color:#64748b; margin-bottom:2px;">Dung lượng tối đa</div>
+                <div style="font-weight:600;">200 MB / file</div>
+            </div>
+            <div style="background:#f8fafc; border-radius:8px; padding:10px 12px; grid-column:1 / -1;">
+                <div style="color:#64748b; margin-bottom:2px;">Cột bắt buộc</div>
+                <div style="font-weight:600;">Ngày + ít nhất 1 mặt hàng (MG95, MG92, DO 0.001%, DO 0.05%)</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
     with col_status:
+        card_status = st.container(border=True)
+    with card_status:
         st.markdown("#### Trạng thái hệ thống")
         if is_gpu:
             st.markdown("""
@@ -1497,7 +1774,7 @@ if nav_choice == "◈  Dự báo":
                 Dự báo nhanh (< 1s) hoạt động bình thường. Huấn luyện lại có thể thực hiện tại mục <b>Huấn luyện</b>.
             </div>
             """, unsafe_allow_html=True)
-            
+
         last_known_date = "Chưa rõ"
         if active_file_paths:
             try:
@@ -1507,7 +1784,7 @@ if nav_choice == "◈  Dự báo":
                 last_known_date = base_full_orig[DATE_COL].max().strftime("%d/%m/%Y")
         else:
             last_known_date = base_full_orig[DATE_COL].max().strftime("%d/%m/%Y")
-            
+
         st.markdown(f"""
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12px;">
             <div style="border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:#f8fafc;">
@@ -1528,7 +1805,7 @@ if nav_choice == "◈  Dự báo":
             </div>
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:6px; margin-top:10px;">
+        <div style="display:flex; flex-direction:column; gap:6px; margin-top:10px; margin-bottom:12px;">
             <div style="display:flex; align-items:baseline; gap:6px; border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px; background:#ffffff; flex-wrap:wrap;">
                 <b style="color:#087762; white-space:nowrap;">✓ Dữ liệu hợp lệ</b>
                 <span style="color:#64748b;">— Có cột Ngày &amp; Giá</span>
@@ -1587,7 +1864,7 @@ elif nav_choice == "▦  Đánh giá mô hình":
             st.markdown(f"""
             <div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; background:#fff;">
                 <span style="color:#64748b; font-size:12px; font-weight:600;">MAE TRUNG BÌNH</span>
-                <div style="font-size:28px; font-weight:800; margin:4px 0; color:#1e293b;">{avg_mae:,.2f} <small style="font-size:14px; font-weight:500; color:#64748b;">VNĐ</small></div>
+                <div style="font-size:28px; font-weight:800; margin:4px 0; color:#1e293b;">{avg_mae:,.2f} <small style="font-size:14px; font-weight:500; color:#64748b;">USD</small></div>
                 <span style="color:#087762; font-size:12px; font-weight:600;">● Sai lệch giá tuyệt đối</span>
             </div>
             """, unsafe_allow_html=True)
@@ -1601,7 +1878,17 @@ elif nav_choice == "▦  Đánh giá mô hình":
             </div>
             """, unsafe_allow_html=True)
         
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background:#f8fafc; border-left:4px solid #00ad91; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
+            <b>💡 Cẩm nang đọc chỉ số & hành động:</b><br>
+            • <b>MAPE (%)</b>: Phần trăm sai lệch trung bình giữa giá AI đoán so với giá thị trường thực tế. 
+              <span style="color:#087762; font-weight:700;">Xanh (&lt; 7%)</span>: Rất tốt, yên tâm dùng số liệu ➔ 
+              <span style="color:#9b6100; font-weight:700;">Vàng (7–10%)</span>: Chấp nhận được ➔ 
+              <span style="color:#dc2626; font-weight:700;">Đỏ (&gt; 10%)</span>: Biến động mạnh, khuyến nghị sang mục <i>Huấn luyện</i> để Finetune.<br>
+            • <b>MAE (USD)</b>: Sai số tuyệt đối tính bằng số tiền thực tế (USD/thùng).<br>
+            • <b>Bảng nhiệt (Heatmap)</b>: Màu xanh đậm biểu thị vùng dự báo bám sát nhất. Càng về mốc xa (+60d), biến động thị trường lớn nên sai số tăng tự nhiên.
+        </div>
+        """, unsafe_allow_html=True)
         
         col_t1, col_t2 = st.columns(2)
         h_order = [f"{h}d" for h in HORIZONS]
@@ -1653,6 +1940,12 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRA CỨU & KIỂM TOÁN</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Lịch Sử & Xuất Dữ Liệu</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Tra cứu các đợt cập nhật dữ liệu và đối chiếu kết quả đã lưu trữ.</p>
+    </div>
+    <div style="background:#f8fafc; border-left:4px solid #087762; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
+        <b>💡 Hướng dẫn tra cứu & phục vụ kiểm toán:</b><br>
+        • <b>Danh mục đợt nạp:</b> Quản lý lịch sử toàn bộ các tệp Excel/CSV đã nạp vào hệ thống theo thứ tự thời gian.<br>
+        • <b>Bảng đối chiếu:</b> Cột <i>Dự báo</i> là giá AI đưa ra tại thời điểm đó trong quá khứ; cột <i>Thực tế</i> là giá thị trường diễn ra sau đó. Bấm <b>'📥 Xuất Bảng Đợt Này'</b> để tải file CSV nộp cấp quản lý.<br>
+        • <b>Đồ thị đối chiếu:</b> Đường <b>nét liền xanh ngọc</b> là giá Thực tế, đường <b>nét đứt tím</b> là giá Dự báo. Hai đường càng bám sát nhau chứng tỏ mô hình dự đoán càng chính xác.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1725,6 +2018,12 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Huấn Luyện & Tinh Chỉnh Mô Hình</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Khu vực quản trị dành cho việc cập nhật bộ não AI với chuỗi dữ liệu mới.</p>
     </div>
+    <div style="background:#f8fafc; border-left:4px solid #c77700; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
+        <b>💡 Cẩm nang huấn luyện & tối ưu mô hình:</b><br>
+        • <b>Khi nào nên huấn luyện?</b> Định kỳ 1 tháng/lần sau khi có đủ dữ liệu giá thực tế của tháng đó, hoặc khi Trang 2 cảnh báo MAPE &gt; 10%.<br>
+        • <b>Chế độ khuyến nghị:</b> Chọn <b>'⚡ Finetune từ checkpoint'</b> để mô hình cập nhật theo giá mới nhất mà không mất đi tri thức lịch sử đã học.<br>
+        • <b>Đánh giá nghiệm thu:</b> Sau khi chạy xong, chuyển sang <b>Tab 3: So sánh Kết quả (Benchmarking)</b> để đối chiếu phiên mới vs phiên cũ, nghiệm thu <b>% Cải thiện độ chính xác (Giảm sai số)</b>.
+    </div>
     """, unsafe_allow_html=True)
 
     tab_train, tab_history, tab_compare = st.tabs([
@@ -1753,23 +2052,26 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
             </div>
             """, unsafe_allow_html=True)
             
-        st.markdown("#### Thiết lập tham số huấn luyện")
-        col_tmode, col_tep = st.columns([2, 1])
-        with col_tmode:
-            train_mode = st.selectbox("Chế độ huấn luyện:", ["⚡ Finetune từ checkpoint hiện tại (Khuyên dùng)", "🔁 Huấn luyện lại từ đầu"])
-        with col_tep:
-            n_epochs = st.number_input("Số vòng lặp (Epochs):", min_value=1, max_value=200, value=25 if not is_gpu else 50, help="Số epochs càng lớn, mô hình học càng sâu nhưng tốn nhiều thời gian hơn.")
-            
-        sel_hz_manual = st.multiselect("Chọn các mốc cần cập nhật:", HORIZONS, default=[1, 5, 10, 15, 20, 30], format_func=lambda h: f"{h} ngày (h{h})")
-
+        # Việc C: kiểm tra khóa TRƯỚC khi vẽ các control cấu hình, để khi có job khác đang chạy,
+        # toàn bộ control (không chỉ nút Bắt đầu) đều bị khóa xám — tránh người dùng đổi tham số
+        # hoặc bấm lung tung gây nhầm lẫn/góp phần kích hoạt các thao tác xung đột giữa lúc job chạy.
         active_lock = get_active_training_lock()
         if active_lock:
             st.warning(
                 f"⏳ **Đã có một Job Huấn luyện khác đang chạy** (bắt đầu lúc {active_lock.get('started_at', '?')}, "
                 f"mô hình: {', '.join(active_lock.get('models', []))}). "
                 "Hệ thống chỉ cho phép 1 job chạy tại một thời điểm để tránh ghi đè checkpoint. "
-                "Vui lòng đợi job hiện tại hoàn tất rồi thử lại."
+                "Vui lòng đợi job hiện tại hoàn tất rồi thử lại — mọi tham số bên dưới tạm khóa."
             )
+
+        st.markdown("#### Thiết lập tham số huấn luyện")
+        col_tmode, col_tep = st.columns([2, 1])
+        with col_tmode:
+            train_mode = st.selectbox("Chế độ huấn luyện:", ["⚡ Finetune từ checkpoint hiện tại (Khuyên dùng)", "🔁 Huấn luyện lại từ đầu"], disabled=bool(active_lock))
+        with col_tep:
+            n_epochs = st.number_input("Số vòng lặp (Epochs):", min_value=1, max_value=200, value=25 if not is_gpu else 50, help="Số epochs càng lớn, mô hình học càng sâu nhưng tốn nhiều thời gian hơn.", disabled=bool(active_lock))
+
+        sel_hz_manual = st.multiselect("Chọn các mốc cần cập nhật:", HORIZONS, default=HORIZONS, format_func=lambda h: f"{h} ngày (h{h})", disabled=bool(active_lock))
 
         if st.button("🚀 Bắt đầu Job Huấn Luyện", key="btn_train_job_p4", type="primary", disabled=bool(active_lock)):
             if not sel_models:
@@ -1783,7 +2085,32 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
                 progress_bar = st.progress(0)
                 status_box = st.status(f"⏳ Job đang chạy: Chuẩn bị môi trường cho {', '.join(sel_models)}...", expanded=True)
 
-                import subprocess
+                # Việc B: bảng tiến độ trực quan theo TỪNG MỐC (thay vì chỉ 1 thanh % chung chung) —
+                # đặc biệt hữu ích khi chạy CPU (chậm, người dùng cần biết đang chạy tới đâu).
+                hz_table_box = st.empty()
+                hz_order = sorted(sel_hz_manual)
+                hz_status = {h: {"state": "waiting", "val_loss": None} for h in hz_order}
+                current_hz = hz_order[0] if hz_order else None
+
+                def _render_hz_table():
+                    icon = {"waiting": "⚪", "running": "⏳", "done": "✅"}
+                    lines = []
+                    for h in hz_order:
+                        st_ = hz_status[h]
+                        txt = f"{icon[st_['state']]} Mốc {h} ngày: "
+                        if st_["state"] == "waiting":
+                            txt += "Đang chờ..."
+                        elif st_["state"] == "running":
+                            txt += "Đang tối ưu hóa..."
+                        else:
+                            vl = st_["val_loss"]
+                            txt += f"Đã xong (Val Loss: {vl:.5f})" if vl is not None else "Đã xong"
+                        lines.append(txt)
+                    hz_table_box.markdown("  \n".join(lines))
+
+                _render_hz_table()
+
+                import subprocess, re
                 cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_manual]
                 if "Huấn luyện lại từ đầu" in train_mode:
                     cmd.append("--force_retrain")
@@ -1792,19 +2119,36 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
                 hz_completed = 0
                 process = None
 
-                acquire_training_lock(sel_models, sel_hz_manual)
+                # Chấp nhận cả 2 kiểu chuỗi log GUMNet lẫn HybridTriNet in ra val loss — trước đây
+                # chỉ bắt "Best Val Loss" (chỉ GUMNet dùng), khiến thanh tiến trình đứng im 0% suốt
+                # phiên huấn luyện HybridTriNet dù nó vẫn chạy bình thường ở phía sau.
+                VAL_LOSS_RE = re.compile(r"(?:Best Val Loss:|best_val=)\s*([\d.]+)")
+                HZ_START_RE = re.compile(r"ĐANG HUẤN LUYỆN MỐC:\s*(\d+)\s*NGÀY")
+
+                acquire_training_lock(sel_models, sel_hz_manual)  # giữ chỗ, tránh race giữa 2 người dùng
                 try:
                     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                    acquire_training_lock(sel_models, sel_hz_manual, pid=process.pid)  # ghi đè bằng PID thật
 
                     for line in process.stdout:
                         log_lines.append(line)
-                        if "Early Stopping" in line or "Best Val Loss" in line:
+                        hz_match = HZ_START_RE.search(line)
+                        loss_match = VAL_LOSS_RE.search(line)
+                        if hz_match:
+                            h_started = int(hz_match.group(1))
+                            if h_started in hz_status:
+                                current_hz = h_started
+                                hz_status[h_started]["state"] = "running"
+                                _render_hz_table()
+                            status_box.write(f"📌 {line.strip()}")
+                        elif loss_match and current_hz is not None and current_hz in hz_status:
+                            hz_status[current_hz]["state"] = "done"
+                            hz_status[current_hz]["val_loss"] = float(loss_match.group(1))
+                            _render_hz_table()
                             hz_completed = min(hz_completed + 1, total_hz)
                             pct = int((hz_completed / total_hz) * 100)
                             progress_bar.progress(pct)
                             status_box.update(label=f"🔄 Đang tối ưu hóa... (Đã hoàn thành {hz_completed}/{total_hz} mốc - {pct}%)")
-                        elif "ĐANG HUẤN LUYỆN MỐC" in line:
-                            status_box.write(f"📌 {line.strip()}")
 
                     process.wait()
                     progress_bar.progress(100)
@@ -1824,13 +2168,15 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
                     status_box.update(label="❌ Lỗi khởi động tiến trình", state="error")
                     st.error(f"Lỗi: {e}")
                 finally:
-                    # Dù thành công, lỗi, hay bị Streamlit ngắt giữa chừng (đổi trang trong lúc
-                    # chạy), vẫn phải dọn: không để lock kẹt vĩnh viễn và không để tiến trình
-                    # con chạy mồ côi ngoài tầm kiểm soát.
-                    if process is not None and process.poll() is None:
-                        try: process.terminate()
-                        except Exception: pass
-                    release_training_lock()
+                    # Lỗi #17 (đã xác nhận): trước đây luôn terminate() tiến trình con nếu người
+                    # dùng đổi trang giữa chừng — có thể cắt ngang đúng lúc đang ghi checkpoint
+                    # (torch.save), gây hỏng file. Từ giờ train_all_horizons.py TỰ quản lý lock
+                    # của chính nó (ghi lúc bắt đầu, tự xoá khi thực sự xong — xem file đó), nên
+                    # ở đây CHỈ dọn lock khi tiến trình con CHƯA từng chạy được (ví dụ Popen lỗi
+                    # ngay từ đầu) — còn nếu nó đang chạy thật, cứ để nó chạy nốt trong nền và tự
+                    # dọn lock của chính nó khi hoàn tất, dù script Streamlit này đã bị ngắt.
+                    if process is None or process.poll() is not None:
+                        release_training_lock()
 
                 if log_lines:
                     with st.expander("🔍 Xem chi tiết nhật ký tiến trình kỹ thuật", expanded=False):
@@ -2098,9 +2444,17 @@ elif nav_choice == "⚙  Huấn luyện mô hình":
                         title="Đối chiếu Validation Loss (Càng thấp mô hình càng chuẩn xác)",
                         barmode="group",
                         template="plotly_dark",
-                        height=310,
-                        margin=dict(l=20, r=20, t=40, b=20),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                        height=340,
+                        # Lỗi đã xác nhận: legend ngang neo ở y=1.02 (ngay sát phía trên khung vẽ)
+                        # dùng chung vùng không gian với tiêu đề dài phía trên -> chồng chữ khi
+                        # tiêu đề đủ dài (đặc biệt màn hình rộng). Chuyển legend xuống DƯỚI biểu đồ
+                        # để không bao giờ tranh chỗ với tiêu đề nữa, bất kể tiêu đề dài ngắn thế nào.
+                        margin=dict(l=20, r=20, t=40, b=60),
+                        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+                        # Lỗi đã xác nhận: tên trace "Phiên đối chứng (TR-...)" khá dài, Plotly mặc
+                        # định cắt bớt bằng "..." khi hiện tooltip hover. namelength=-1 = hiện đầy đủ,
+                        # không cắt nữa.
+                        hoverlabel=dict(namelength=-1)
                     )
                     safe_plotly_chart(fig_cmp)
 
@@ -2114,6 +2468,57 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">HƯỚNG DẪN VẬN HÀNH</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Hướng Dẫn Sử Dụng & Vận Hành Hệ Thống</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Các bước vận hành chuẩn hóa, hướng dẫn tương tác với mũi tên và giải thích chi tiết CPU/GPU.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 1. Thông báo nhận diện phần cứng máy chủ hiện tại
+    if is_gpu:
+        st.markdown("""
+        <div style="background:#eafaf5; border:1px solid #bcebdc; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
+            <b style="color:#087762; font-size:15px;">🖥️ Nhận diện phần cứng máy chủ: Đang kích hoạt GPU NVIDIA CUDA</b>
+            <p style="color:#2d5a50; font-size:13px; margin:4px 0 0; line-height:1.5;">
+                Hệ thống đã tự động nhận diện và cấu hình tăng tốc phần cứng tối đa. 
+                Mọi thao tác Dự báo &amp; Đánh giá diễn ra tức thì (&lt; 1s). 
+                Khi Huấn luyện mô hình (Trang 4), hệ thống tự động tối ưu với mức <b>50 Epochs</b> (tốc độ siêu nhanh khoảng 10–20 giây mỗi mốc thời gian).
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background:#fff7e7; border:1px solid #f6d58c; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
+            <b style="color:#9b6100; font-size:15px;">🖥️ Nhận diện phần cứng máy chủ: Đang chạy CPU Doanh Nghiệp (6 vCPUs)</b>
+            <p style="color:#6d4800; font-size:13px; margin:4px 0 0; line-height:1.5;">
+                Hệ thống đang vận hành hoàn toàn ổn định và an toàn trên nền tảng CPU. 
+                Dự báo giá thị trường diễn ra nhanh chóng (&lt; 1s). 
+                Khi Huấn luyện mô hình (Trang 4), hệ thống tự động tối ưu với mức <b>25 Epochs</b> (chỉ mất 1–2 phút mỗi mốc thời gian), đảm bảo an toàn tuyệt đối và không chiếm dụng tài nguyên.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 2. Sơ đồ quy trình vận hành 4 bước chuẩn hóa
+    st.markdown("""
+    #### 🔄 Sơ Đồ Quy Trình Vận Hành 4 Bước Khép Kín
+    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:10px 0 24px;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
+            <div style="font-size:24px; margin-bottom:4px;">📥</div>
+            <b style="color:#00ad91; font-size:13px;">BƯỚC 1: NẠP DỮ LIỆU</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Kéo thả file Excel mới vào Trang 1. Bảng giá 7 mốc hiện ra ngay.</p>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
+            <div style="font-size:24px; margin-bottom:4px;">📊</div>
+            <b style="color:#6954d9; font-size:13px;">BƯỚC 2: KIỂM ĐỊNH</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Sang Trang 2 xem sai số MAPE. Xanh (&lt; 7%) là an toàn dùng ngay.</p>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
+            <div style="font-size:24px; margin-bottom:4px;">⚙️</div>
+            <b style="color:#c77700; font-size:13px;">BƯỚC 3: FINETUNE</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Nếu MAPE &gt; 10%: Sang Trang 4 bấm Finetune để AI học giá mới.</p>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
+            <div style="font-size:24px; margin-bottom:4px;">📁</div>
+            <b style="color:#087762; font-size:13px;">BƯỚC 4: LƯU BÁO CÁO</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Xuất file CSV nộp lãnh đạo. Dữ liệu lưu vĩnh viễn ở Trang 3.</p>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2143,6 +2548,27 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <button class="oil-btn oil-btn-ghost" id="oil-replay-btn" style="font-size:13px;">↺ Xem lại thông báo chào mừng & hướng dẫn từ đầu</button>
     </div>
     """, unsafe_allow_html=True)
+
+    # Lỗi #18 (đã xác nhận): 2 file PDF hướng dẫn đã có sẵn trong project nhưng chưa hề được
+    # cung cấp nút tải trên giao diện — người dùng LAN không có cách nào lấy được tài liệu này
+    # ngoại trừ tự tìm trong thư mục cài đặt.
+    _pdf_guides = [
+        ("📕 Hướng dẫn Cấu hình & Triển khai (PDF)", ROOT / "HUONG_DAN_CAU_HINH_VA_TRIEN_KHAI.pdf"),
+        ("📗 Hướng dẫn Triển khai & Sử dụng (PDF)", ROOT / "HUONG_DAN_TRIEN_KHAI_VA_SU_DUNG.pdf"),
+    ]
+    _available_pdfs = [(label, p) for label, p in _pdf_guides if p.exists()]
+    if _available_pdfs:
+        st.markdown("#### 📄 Tài liệu hướng dẫn chi tiết (PDF)")
+        cols_pdf = st.columns(len(_available_pdfs))
+        for col, (label, pdf_path) in zip(cols_pdf, _available_pdfs):
+            with col:
+                st.download_button(
+                    label=label,
+                    data=pdf_path.read_bytes(),
+                    file_name=pdf_path.name,
+                    mime="application/pdf",
+                    key=f"dl_guide_{pdf_path.stem}",
+                )
 
     st.markdown("---")
     st.markdown("#### 📖 4 Bước Nghiệp Vụ Chuẩn Hóa")
@@ -2269,6 +2695,43 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         }
     ])
     safe_dataframe(table_hw.set_index("Nhiệm vụ nghiệp vụ"))
+
+    st.markdown("---")
+    st.markdown("#### ❓ Giải Đáp Thắc Mắc Nghiệp Vụ Thường Gặp (FAQ)")
+    
+    col_faq1, col_faq2 = st.columns(2)
+    with col_faq1:
+        st.markdown("""
+        <div class="guide-card">
+            <b style="color:#0f172a; font-size:14px;">1. Bao lâu nên nạp file dữ liệu mới một lần?</b>
+            <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
+                Khuyến nghị nạp định kỳ <b>1–2 tuần/lần</b> hoặc ngay khi vừa kết thúc kỳ điều hành giá xăng dầu để hệ thống luôn có mốc dự báo tươi mới nhất.
+            </p>
+        </div>
+        <div style="height:10px;"></div>
+        <div class="guide-card">
+            <b style="color:#0f172a; font-size:14px;">2. Tệp tải lên có bắt buộc đủ cả 4 mặt hàng không?</b>
+            <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
+                Không bắt buộc. Nếu tệp Excel của bạn chỉ có giá MG95 và DO 0.05%, hệ thống vẫn tự động trích xuất và tính toán dự báo chuẩn xác cho các mặt hàng đó.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_faq2:
+        st.markdown("""
+        <div class="guide-card">
+            <b style="color:#0f172a; font-size:14px;">3. Vì sao không có ngày dự báo vào Thứ Bảy &amp; Chủ Nhật?</b>
+            <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
+                Thị trường xăng dầu quốc tế đóng cửa vào cuối tuần. Chuỗi dự báo tự động bỏ qua ngày nghỉ để luôn trùng khớp với các phiên giao dịch thực tế.
+            </p>
+        </div>
+        <div style="height:10px;"></div>
+        <div class="guide-card">
+            <b style="color:#0f172a; font-size:14px;">4. Đơn vị tiền tệ của các mặt hàng được tính thế nào?</b>
+            <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
+                Xăng MG95 và MG92 tính theo <b>USD/thùng</b> (Platts Singapore). Dầu DO 0.001% và DO 0.05% tính theo <b>USD/tấn</b> chuẩn thị trường quốc tế.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 

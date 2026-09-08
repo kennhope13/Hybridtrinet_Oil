@@ -23,6 +23,66 @@ DATA_PATH = ROOT / "oil_forecast_research_new-main" / "data" / "processed" / "cl
 OUT_DIR = ROOT / "checkpoints_multi"
 OUT_DIR.mkdir(exist_ok=True)
 
+# Cùng 1 file khóa với app_main.py (Lỗi #16/#17 đã xác nhận): trước đây app_main.py tự ghi PID
+# của CHÍNH NÓ (Streamlit server, luôn sống) vào lock, và tự terminate() tiến trình huấn luyện
+# này nếu người dùng đổi trang giữa chừng — có thể cắt ngang đúng lúc đang ghi checkpoint.
+# Giờ tiến trình NÀY tự quản lý lock của chính mình bằng PID thật của mình: tự tạo lúc bắt đầu,
+# tự xoá khi thực sự xong (dù thành công hay lỗi) — nên app_main.py không cần/không nên giết nó
+# giữa chừng nữa, cứ để nó chạy nốt trong nền rồi tự dọn lock khi hoàn tất.
+TRAIN_LOCK_FILE = ROOT / ".training.lock"
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True  # Tiến trình tồn tại nhưng khác quyền truy cập
+    except OSError:
+        return False
+    except Exception:
+        # Trên Windows, os.kill(pid, 0) với PID đã chết đôi khi ném SystemError thay vì
+        # OSError thông thường (đã bắt gặp thật khi kiểm thử) — coi như không còn sống,
+        # thà bỏ qua khóa rác còn hơn crash cả tiến trình huấn luyện vì 1 lần kiểm tra lỗi.
+        return False
+
+def _check_no_other_job_running():
+    """Thực nghiệm (xem docs/THUC_NGHIEM_CPU_GPU_VA_KHOA_SONG_SONG.md) đã xác nhận: nếu 2 job
+    huấn luyện bị chạy đè lên nhau (vd: gọi thẳng script này 2 lần qua terminal, bỏ qua giao diện
+    web vốn đã tự khóa nút bấm), chúng có thể ghi đè checkpoint của nhau giữa chừng. Kiểm tra này
+    thêm 1 lớp chặn ở tầng script: nếu thấy lock của một tiến trình KHÁC còn sống, tự thoát ngay
+    thay vì chạy tiếp và âm thầm gây xung đột checkpoint.
+    """
+    if not TRAIN_LOCK_FILE.exists():
+        return
+    try:
+        info = json.loads(TRAIN_LOCK_FILE.read_text(encoding="utf-8"))
+        pid = info.get("pid")
+    except Exception:
+        return  # Lock hỏng/đọc không được -> coi như không có, để tiến trình mới tự ghi đè
+    if pid and pid != os.getpid() and _pid_alive(pid):
+        flush_print(
+            f"❌ Đã có một Job Huấn luyện khác đang chạy (PID {pid}, bắt đầu lúc "
+            f"{info.get('started_at', '?')}). Dừng ngay để tránh ghi đè checkpoint lẫn nhau."
+        )
+        sys.exit(1)
+
+def _write_own_lock(models, horizons):
+    try:
+        TRAIN_LOCK_FILE.write_text(json.dumps({
+            "pid": os.getpid(),
+            "models": models,
+            "horizons": horizons,
+            "started_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+def _release_own_lock():
+    try:
+        TRAIN_LOCK_FILE.unlink()
+    except Exception:
+        pass
+
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 MASTER_HORIZON = 60  # Mốc dài nhất
@@ -412,6 +472,10 @@ def train_hybrid_horizon(df, horizon, device, epochs=None):
 
 if __name__ == "__main__":
     args = parse_args()
+    _check_no_other_job_running()
+    _write_own_lock(args.models, args.horizons)
+    import atexit
+    atexit.register(_release_own_lock)  # đảm bảo lock luôn được dọn dù script lỗi/thoát bất thường
     flush_print("🚀 HỆ THỐNG HUẤN LUYỆN ĐÃ SẴN SÀNG.")
     
     # 1. Cập nhật dữ liệu nếu được yêu cầu
@@ -428,7 +492,8 @@ if __name__ == "__main__":
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
     results = {}
-    
+    all_val_losses = []  # dùng để tính avg_val_loss (Lỗi #22, xem bên dưới)
+
     # 3. Huấn luyện từng mốc Horizon riêng biệt (Multi-Model Mode)
     for hz in args.horizons:
         flush_print(f"\n{'='*40}")
@@ -451,12 +516,14 @@ if __name__ == "__main__":
             if v_loss is not None:
                 results[f"GUMNet_h{hz}"] = round(float(v_loss), 6)
                 results[f"h{hz}"] = round(float(v_loss), 6)
-            
+                all_val_losses.append(float(v_loss))
+
         if "HybridTriNet" in args.models:
             flush_print(f"🧬 [HybridTriNet] Horizon {hz}d...")
             v_loss = train_hybrid_horizon(df, hz, device, epochs=args.epochs)
             if v_loss is not None:
                 results[f"HybridTriNet_h{hz}"] = round(float(v_loss), 6)
+                all_val_losses.append(float(v_loss))
                 if f"h{hz}" not in results:
                     results[f"h{hz}"] = round(float(v_loss), 6)
     
@@ -470,39 +537,56 @@ if __name__ == "__main__":
         session_id = f"TR-{now.strftime('%Y%m%d-%H%M%S')}"
         history_file = OUT_DIR / "training_history.json"
         
+        # Lỗi #21 (đã xác nhận, báo cáo Gemini): trước đây nếu đọc history_file cũ bị lỗi (vd:
+        # đang bị Windows khóa file đúng lúc app_main.py mở lên đọc), code âm thầm reset
+        # entries = [] rồi ghi đè -> XOÁ TRẮNG toàn bộ lịch sử các phiên huấn luyện trước đó,
+        # chỉ còn đúng 1 phiên vừa xong. Giờ nếu đọc lỗi thì KHÔNG ghi đè nữa, chỉ báo cảnh báo
+        # và bỏ qua lưu phiên này vào lịch sử — thà thiếu 1 phiên còn hơn mất sạch lịch sử cũ.
         entries = []
+        history_read_failed = False
         if history_file.exists():
             try:
                 with open(history_file, "r", encoding="utf-8") as f:
                     entries = json.load(f)
-            except:
-                entries = []
-                
-        d_start = df[DATE_COL].min().strftime("%d/%m/%Y") if DATE_COL in df.columns else "01/05/2008"
-        d_end = df[DATE_COL].max().strftime("%d/%m/%Y") if DATE_COL in df.columns else "04/09/2026"
-        
-        entry = {
-            "session_id": session_id,
-            "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
-            "mode": "Train lại từ đầu" if args.force_retrain else "Finetune (Cập nhật)",
-            "models": args.models,
-            "device": str(device).upper(),
-            "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU (6 vCPUs)",
-            "epochs": args.epochs,
-            "horizons": [f"{h}d" for h in args.horizons],
-            "data_info": {
-                "total_rows": len(df),
-                "date_range": f"{d_start} ➔ {d_end}",
-                "start_date": d_start,
-                "end_date": d_end,
-                "targets": TARGET_COLS
-            },
-            "results": results
-        }
-        entries.insert(0, entry)
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2)
-            
-        flush_print(f"📝 Đã lưu thông tin phiên huấn luyện: {session_id}")
+            except Exception:
+                history_read_failed = True
+
+        if history_read_failed:
+            flush_print(
+                "⚠️ Không đọc được training_history.json cũ (có thể đang bị khóa/hỏng) — "
+                "BỎ QUA lưu phiên này vào lịch sử để tránh ghi đè mất lịch sử cũ."
+            )
+        else:
+            d_start = df[DATE_COL].min().strftime("%d/%m/%Y") if DATE_COL in df.columns else "01/05/2008"
+            d_end = df[DATE_COL].max().strftime("%d/%m/%Y") if DATE_COL in df.columns else "04/09/2026"
+
+            entry = {
+                "session_id": session_id,
+                "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
+                "mode": "Train lại từ đầu" if args.force_retrain else "Finetune (Cập nhật)",
+                "models": args.models,
+                "device": str(device).upper(),
+                "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU (6 vCPUs)",
+                "epochs": args.epochs,
+                "horizons": [f"{h}d" for h in args.horizons],
+                "data_info": {
+                    "total_rows": len(df),
+                    "date_range": f"{d_start} ➔ {d_end}",
+                    "start_date": d_start,
+                    "end_date": d_end,
+                    "targets": TARGET_COLS
+                },
+                "results": results,
+                # Lỗi #22 (đã xác nhận, báo cáo Gemini): trước đây field này không hề được ghi,
+                # khiến "Val Loss TB" ở tab Lịch sử và toàn bộ KPI so sánh Benchmarking luôn
+                # trống với mọi phiên huấn luyện thật.
+                "avg_val_loss": round(sum(all_val_losses) / len(all_val_losses), 6) if all_val_losses else None,
+                "status": "success",
+            }
+            entries.insert(0, entry)
+            with open(history_file, "w", encoding="utf-8") as f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+
+            flush_print(f"📝 Đã lưu thông tin phiên huấn luyện: {session_id}")
     except Exception as ex:
         flush_print(f"ℹ️ Không thể lưu training_history.json: {ex}")
