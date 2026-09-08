@@ -7,6 +7,7 @@ import sys, json, importlib, warnings, os, logging, uuid, subprocess, re, time, 
 # Tắt toàn bộ cảnh báo (scikit-learn version, streamlit deprecation, etc.) để Terminal luôn sạch đẹp
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"
 os.environ["STREAMLIT_PYARROW_ENABLED"] = "false" # Tắt PyArrow để tránh lỗi chặn DLL
 
 # Tắt triệt để logging cảnh báo của Streamlit (ví dụ: use_container_width deprecation)
@@ -1946,7 +1947,7 @@ def ensure_backtest_job_running(fp, models, files, cutoff_date, force=False):
     # cùng chạy model trên chung 1 GPU — nếu cả 2 cùng chạy một lúc sẽ tranh nhau và có thể ghi
     # đè kết quả của nhau. Trong lúc pipeline mới đang chạy thật, hệ thống cũ tạm nhường, không
     # tự tạo job riêng — tránh chạy chồng chéo lãng phí và tranh chấp file/GPU.
-    if pipeline_engine.get_pipeline_status().get("is_running"):
+    if pipeline_engine.get_pipeline_status().get("is_running") or (ROOT / ".pipeline.lock").exists():
         return
     status = get_backtest_status()
     alive = _backtest_job_alive(status)
@@ -1987,7 +1988,7 @@ def render_global_pipeline_banner():
     is_running = status_data.get("is_running", False)
 
     if st_val == "idle" and not is_running:
-        return
+        return False
 
     steps = status_data.get("steps", [])
     step_title = status_data.get("step_title", "Cập nhật dữ liệu")
@@ -2056,25 +2057,102 @@ def render_global_pipeline_banner():
     </div>
     """, unsafe_allow_html=True)
 
+    # Màn hình chờ khóa thao tác chuột khi tiến trình đang chạy (tự động mở khóa khi hoàn tất)
+    if is_running:
+        st.markdown(f"""
+        <style>
+        .pipeline-lock-overlay {{
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(4px);
+            z-index: 999999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: all;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }}
+        .pipeline-lock-box {{
+            background: #ffffff;
+            color: #0f172a;
+            border-radius: 16px;
+            padding: 28px 36px;
+            max-width: 560px;
+            width: 90%;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.35);
+            text-align: center;
+            border: 1px solid #e2e8f0;
+        }}
+        .pipeline-spinner {{
+            border: 4px solid #f1f5f9;
+            border-top: 4px solid #00ad91;
+            border-radius: 50%;
+            width: 44px; height: 44px;
+            animation: spinLock 1s linear infinite;
+            margin: 0 auto 16px;
+        }}
+        @keyframes spinLock {{
+            0% {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+        </style>
+        <div class="pipeline-lock-overlay">
+            <div class="pipeline-lock-box">
+                <div class="pipeline-spinner"></div>
+                <div style="font-size:11.5px; font-weight:800; color:#00ad91; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;">
+                    HỆ THỐNG ĐANG TỰ ĐỘNG XỬ LÝ DỮ LIỆU
+                </div>
+                <h3 style="margin:4px 0 10px; font-size:20px; font-weight:800; color:#0f172a;">
+                    {step_title}
+                </h3>
+                <div style="font-size:13.5px; color:#475569; margin-bottom:16px; line-height:1.5;">
+                    {details}
+                </div>
+                <div style="background:#f8fafc; border-radius:8px; padding:10px 14px; font-size:12px; color:#64748b;">
+                    🔒 <i>Màn hình đang tạm khóa để bảo vệ dữ liệu. Hệ thống sẽ <b>tự động mở khóa</b> ngay khi hoàn tất.</i>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
     # Nút đóng hoặc đặt lại trạng thái khi tiến trình không còn chạy thật
     if (st_val in ("failed", "complete") or not is_running) and st_val != "idle":
-        _col_space, _col_btn = st.columns([3.2, 1.3])
-        with _col_btn:
-            btn_label = "✕ Đóng thông báo & Đặt lại" if st_val == "failed" else "✕ Đóng thông báo"
-            if st.button(btn_label, key="btn_dismiss_pipeline_banner", use_container_width=True):
-                pipeline_engine.reset_pipeline_status()
-                st.rerun()
+        retrain_dec = status_data.get("retrain_decision") or {}
+        can_manual_retrain = (st_val == "complete" and not retrain_dec.get("needed", False))
 
-    return is_running
+        if can_manual_retrain:
+            _col_space, _col_retrain, _col_dismiss = st.columns([2.2, 1.4, 1.2])
+            with _col_retrain:
+                if st.button("⚡ Vẫn muốn huấn luyện lại", key="btn_force_retrain_banner",
+                             type="secondary", use_container_width=True,
+                             help="Kích hoạt quy trình tối ưu GUMNet Candidate ngầm ngay cả khi MAPE đang tốt"):
+                    fps = [p.name for p in file_paths]
+                    pipeline_engine.launch_pipeline_background("FORCE-RETRAIN", 0, fps, force_retrain=True)
+                    st.rerun()
+            with _col_dismiss:
+                if st.button("✕ Đóng thông báo", key="btn_dismiss_pipeline_banner", use_container_width=True):
+                    pipeline_engine.reset_pipeline_status()
+                    st.rerun()
+        else:
+            _col_space, _col_btn = st.columns([3.2, 1.3])
+            with _col_btn:
+                btn_label = "✕ Đóng thông báo & Đặt lại" if st_val == "failed" else "✕ Đóng thông báo"
+                if st.button(btn_label, key="btn_dismiss_pipeline_banner", use_container_width=True):
+                    pipeline_engine.reset_pipeline_status()
+                    st.rerun()
 
-# Theo yêu cầu: khi pipeline đang xử lý thật (is_running), khóa toàn trang — không hiện nội
-# dung/menu bên dưới, không cho thao tác đi chỗ khác — chỉ hiện đúng 1 màn hình tiến trình ở
-# giữa, tự làm mới tới khi xong. (Trước đây từng để lộ nội dung phía dưới trong lúc xử lý, sau
-# đó lại từng để y hệt hiện trắng trang do gọi rerun() quá sớm — giờ chủ động khóa có chủ đích,
-# kèm nội dung rõ ràng, không phải màn hình trắng do lỗi.)
-_pipeline_is_running = render_global_pipeline_banner()
+    return bool(is_running)
 
-if _pipeline_is_running:
+# Hiển thị thanh tiến trình toàn cục trên mọi trang
+is_pipeline_busy = bool(render_global_pipeline_banner())
+
+# Theo yêu cầu: khi pipeline đang xử lý thật (is_pipeline_busy/is_running), khóa toàn trang —
+# không hiện nội dung/menu bên dưới, không cho thao tác đi chỗ khác — chỉ hiện đúng 1 màn hình
+# tiến trình ở giữa, tự làm mới tới khi thật sự "Hoàn tất" (is_running mới chuyển False).
+if is_pipeline_busy:
     st.markdown("""
     <div style="max-width:560px; margin:60px auto; text-align:center; padding:36px 28px;
                 background:#ffffff; border:1px solid #e2e8f0; border-radius:16px;
@@ -2415,6 +2493,15 @@ elif nav_choice == "▦  Đánh giá mô hình":
             • <b>Bảng nhiệt (Heatmap)</b>: Màu sắc thể hiện mức sai số tương đối giữa các mốc. Các mốc xa có thể có sai số khác mốc gần tùy giai đoạn dữ liệu.
         </div>
         """, unsafe_allow_html=True)
+
+        _col_card_desc, _col_card_act = st.columns([3.2, 1.3])
+        with _col_card_desc:
+            st.caption("⚙️ **Chủ động tối ưu**: Hệ thống tự động huấn luyện khi MAPE > 10%. Nếu muốn ép máy tối ưu ngay mô hình mới với dữ liệu hiện tại, bạn có thể bấm nút bên cạnh.")
+        with _col_card_act:
+            if st.button("⚡ Tối ưu mô hình ngay", key="btn_force_retrain_page2", disabled=bool(is_pipeline_busy), use_container_width=True):
+                fps = [p.name for p in file_paths]
+                pipeline_engine.launch_pipeline_background("MANUAL-PAGE2", 0, fps, force_retrain=True)
+                st.rerun()
         
         col_t1, col_t2 = st.columns(2)
         h_order = [f"{h}d" for h in HORIZONS]

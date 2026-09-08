@@ -272,7 +272,11 @@ def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None
 
                     import gc
                     for step_i, idx_in_new in enumerate(indices):
-                        log_fn(f"⏳ {mname} | File {idx+1} | Điểm {step_i+1}/{len(indices)}")
+                        if log_fn:
+                            try:
+                                log_fn(f"[*] {mname} | File {idx+1} | Diem {step_i+1}/{len(indices)}")
+                            except Exception:
+                                pass
                         gc.collect()
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()

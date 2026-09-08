@@ -30,7 +30,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from project_io import load_checkpoint
+os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+if sys.stdout and getattr(sys.stdout, "encoding", None) and sys.stdout.encoding.lower() != "utf-8":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if sys.stderr and getattr(sys.stderr, "encoding", None) and sys.stderr.encoding.lower() != "utf-8":
+    import io
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
 STATUS_FILE = ROOT / ".pipeline_status.json"
@@ -46,7 +54,7 @@ MAPE_RETRAIN_THRESHOLD = 10.0  # %
 HORIZONS = [1, 5, 10, 15, 20, 30, 60]
 
 
-def _summarize_backtest(frame):
+def _summarize_backtest(frame: Any) -> Dict[str, Any]:
     """Return metrics from the DataFrame contract of backtest_worker."""
     if frame is None or not hasattr(frame, "columns"):
         raise ValueError("Backtest không trả về bảng kết quả")
@@ -63,9 +71,14 @@ def _summarize_backtest(frame):
     return {"mape": mape, "mae": mae, "total_pts": int(len(frame))}
 
 
-def _pid_alive(pid: int) -> bool:
+def _pid_alive(pid: Optional[int]) -> bool:
+    if not pid:
+        return False
     try:
-        os.kill(pid, 0)
+        p = int(pid)
+        if p <= 0:
+            return False
+        os.kill(p, 0)
         return True
     except PermissionError:
         return True
@@ -75,14 +88,34 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _atomic_write_json(path: Path, data: Dict[str, Any]):
+def _replace_with_retry(tmp: Path, target: Path, attempts: int = 10, delay: float = 0.05):
+    """os.replace() dùng chung, chống xung đột WinError 32 trên Windows (file đích đang bị
+    tiến trình khác — thường là app_main.py đọc liên tục — mở đúng lúc ghi đè)."""
+    for i in range(attempts):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def _atomic_write_json(path: Path, data: Dict[str, Any], attempts: int = 10, delay: float = 0.05):
+    """Ghi JSON nguyên tử có xử lý thử lại (retry) chống xung đột WinError 32 trên Windows."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        _replace_with_retry(tmp, path, attempts=attempts, delay=delay)
+    except PermissionError:
+        # Sau khi hết số lần thử lại vẫn bị chặn: ghi trực tiếp đè lên file đích thay vì
+        # bỏ cuộc, để trạng thái không bị mất hẳn.
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        tmp.unlink(missing_ok=True)
 
 
 def _acquire_pipeline_lock(pipeline_id: str) -> bool:
-    """Reserve the single background pipeline slot using O_EXCL."""
+    """Chiếm khóa pipeline nguyên tử (O_EXCL), tự động giải phóng lock rác nếu quá hạn hoặc PID chết."""
     payload = json.dumps({"pipeline_id": pipeline_id, "pid": os.getpid(), "created_at": time.time()})
     try:
         fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -92,28 +125,37 @@ def _acquire_pipeline_lock(pipeline_id: str) -> bool:
     except FileExistsError:
         try:
             current = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
-            if _pid_alive(int(current.get("pid", 0))):
-                if current.get("pipeline_id") != pipeline_id:
-                    return False
-                # App giữ chỗ trước khi Popen; worker cùng pipeline_id tiếp quản
-                # và ghi PID thật để lock có thể được thu hồi nếu worker chết.
+            lock_pid = int(current.get("pid", 0))
+            lock_pipe_id = current.get("pipeline_id")
+            lock_age = time.time() - float(current.get("created_at", 0))
+
+            # 1. Cùng pipeline_id (do app đặt giữ chỗ trước khi spawn worker): tiếp quản lock
+            if lock_pipe_id == pipeline_id:
                 _atomic_write_json(LOCK_FILE, {
                     "pipeline_id": pipeline_id,
                     "pid": os.getpid(),
                     "created_at": current.get("created_at", time.time()),
                 })
                 return True
+
+            # 2. Lock cũ của PID đã chết HOẶC quá 10 phút (stale lock timeout): giải phóng và lấy lại
+            if not _pid_alive(lock_pid) or lock_age > 600:
+                LOCK_FILE.unlink(missing_ok=True)
+                return _acquire_pipeline_lock(pipeline_id)
+
+            # 3. PID khác đang thực sự chạy: từ chối
+            return False
+        except Exception:
             LOCK_FILE.unlink(missing_ok=True)
             return _acquire_pipeline_lock(pipeline_id)
-        except Exception:
-            return False
 
 
 def _release_pipeline_lock(pipeline_id: str) -> None:
     try:
-        current = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
-        if current.get("pipeline_id") == pipeline_id:
-            LOCK_FILE.unlink(missing_ok=True)
+        if LOCK_FILE.exists():
+            current = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+            if current.get("pipeline_id") == pipeline_id or not _pid_alive(int(current.get("pid", 0))):
+                LOCK_FILE.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -195,14 +237,14 @@ def _promote_with_rollback(candidate_dir: Path, backup_dir: Path) -> None:
             target = CKPT_DIR / source.name
             tmp = target.with_suffix(".pt.promote.tmp")
             shutil.copy2(source, tmp)
-            os.replace(tmp, target)
+            _replace_with_retry(tmp, target)
     except Exception:
         for horizon in HORIZONS:
             backup = backup_dir / f"gumnet_h{horizon}.pt"
             if backup.exists():
                 tmp = CKPT_DIR / f"gumnet_h{horizon}.pt.rollback.tmp"
                 shutil.copy2(backup, tmp)
-                os.replace(tmp, CKPT_DIR / f"gumnet_h{horizon}.pt")
+                _replace_with_retry(tmp, CKPT_DIR / f"gumnet_h{horizon}.pt")
         raise
 
 
@@ -229,6 +271,7 @@ def get_pipeline_status() -> Dict[str, Any]:
         "retrain_decision": None,
         "candidate_result": None,
         "error": None,
+        "pid": None,
     }
 
     if not STATUS_FILE.exists():
@@ -242,13 +285,33 @@ def get_pipeline_status() -> Dict[str, Any]:
         # Giờ ghi thẳng trạng thái thất bại (kèm sửa lại step_title/steps cho khớp) xuống đĩa
         # ngay khi phát hiện, để báo đúng và dứt khoát thay vì "treo" vô thời hạn.
         pid = data.get("pid")
-        if data.get("is_running") and pid:
-            if not _pid_alive(pid):
+        if data.get("is_running") and pid is not None:
+            try:
+                pid_int = int(pid)
+            except (ValueError, TypeError):
+                pid_int = 0
+
+            # Tính thời gian chạy để áp dụng grace period chống false-alarm lúc mới spawn
+            started_at_str = data.get("started_at")
+            age_sec = 999.0
+            if started_at_str:
+                try:
+                    t_start = datetime.datetime.strptime(started_at_str, "%Y-%m-%d %H:%M:%S")
+                    age_sec = (datetime.datetime.now() - t_start).total_seconds()
+                except Exception:
+                    pass
+
+            # 1. Quá hạn tối đa 15 phút (900s) không xong: Tự phục hồi an toàn (self-healing)
+            # 2. Hoặc đã khởi động qua grace period (>10s) và tiến trình PID đã thực sự biến mất
+            is_stale_timeout = age_sec > 900.0
+            is_pid_dead = (pid_int > 0 and age_sec > 10.0 and not _pid_alive(pid_int))
+
+            if is_stale_timeout or is_pid_dead:
                 data["is_running"] = False
                 if data.get("status") == "running":
                     data["status"] = "failed"
-                    data["error"] = "Tiến trình nền bị gián đoạn ngoài ý muốn (tiến trình dừng)."
-                    data["step_title"] = "Đã dừng do gián đoạn"
+                    data["error"] = "Tiến trình chạy quá thời gian tối đa." if is_stale_timeout else "Tiến trình nền bị gián đoạn ngoài ý muốn (tiến trình dừng)."
+                    data["step_title"] = "Hết thời gian chờ" if is_stale_timeout else "Đã dừng do gián đoạn"
                     for s in data.get("steps", []):
                         if s.get("state") == "running":
                             s["state"] = "failed"
@@ -288,6 +351,7 @@ def reset_pipeline_status() -> Dict[str, Any]:
         "retrain_decision": None,
         "candidate_result": None,
         "error": None,
+        "pid": None,
     }
     _atomic_write_json(STATUS_FILE, default_state)
     return default_state
@@ -321,7 +385,7 @@ def set_pipeline_step(step_idx: int, step_title: str, details: str = "", step_st
     _atomic_write_json(STATUS_FILE, current)
 
 
-def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[str]):
+def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[str], force_retrain: bool = False):
     """Khởi động bộ điều phối ngầm bằng một tiến trình độc lập hoàn toàn với Streamlit."""
     pipeline_id = f"PIPE-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -339,18 +403,7 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
         {"title": "Hoàn tất", "state": "waiting"},
     ]
 
-    update_pipeline_status(
-        pipeline_id=pipeline_id,
-        status="running",
-        step_index=2,
-        step_title="Đang đối chiếu độ chính xác",
-        details=f"Đã ghi nhận {new_rows} ngày mới từ {len(file_names)} file. Đang chạy đối chiếu dự báo với giá thực tế...",
-        steps=initial_steps,
-        is_running=True,
-        started_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        batch_info={"batch_id": batch_id, "new_rows": new_rows, "files": file_names},
-        error=None,
-    )
+    action_label = "Đang buộc huấn luyện lại..." if force_retrain else "Đang chạy đối chiếu dự báo với giá thực tế..."
 
     # Chạy tiến trình nền độc lập
     python_exe = sys.executable
@@ -365,257 +418,301 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
         "--new-rows",
         str(new_rows),
     ]
+    if force_retrain:
+        cmd.append("--force-retrain")
 
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", FOR_DISABLE_CONSOLE_CTRL_HANDLER="1")
     flags = 0
     if os.name == "nt":
-        # DETACHED_PROCESS trên Windows
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
     try:
+        log_file = ROOT / "pipeline_worker.log"
+        log_handle = open(log_file, "a", encoding="utf-8")
         proc = subprocess.Popen(
             cmd,
             cwd=str(ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
             creationflags=flags,
             env=env,
         )
-        update_pipeline_status(pid=proc.pid)
+        # Ghi trạng thái khởi đầu sạch hoàn toàn (tránh rò rỉ bất kỳ giá trị cũ nào từ đợt trước)
+        now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_state = {
+            "pipeline_id": pipeline_id,
+            "status": "running",
+            "step_index": 2,
+            "step_title": "Đang đối chiếu độ chính xác",
+            "details": f"Đã ghi nhận {new_rows} ngày mới từ {len(file_names)} file. {action_label}",
+            "steps": initial_steps,
+            "is_running": True,
+            "started_at": now_ts,
+            "updated_at": now_ts,
+            "batch_info": {"batch_id": batch_id, "new_rows": new_rows, "files": file_names, "force_retrain": force_retrain},
+            "backtest_result": None,
+            "retrain_decision": None,
+            "candidate_result": None,
+            "error": None,
+            "pid": proc.pid,
+        }
+        _atomic_write_json(STATUS_FILE, new_state)
         return {"started": True, "pipeline_id": pipeline_id, "pid": proc.pid}
     except Exception as e:
         update_pipeline_status(
             status="failed",
             is_running=False,
             error=f"Không thể khởi động tiến trình nền: {e}",
+            pid=None,
         )
         _release_pipeline_lock(pipeline_id)
         return {"started": False, "reason": "start_failed", "pipeline_id": pipeline_id}
 
 
-def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int):
+def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retrain: bool = False):
     """Tiến trình thực thi chính của bộ điều phối ngầm (chạy trong tiến trình riêng)."""
     my_pid = os.getpid()
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now_str}] [INFO] Khởi động worker cho pipeline_id: {pipeline_id} (PID: {my_pid}), batch: {batch_id}, new_rows: {new_rows}, force_retrain: {force_retrain}", flush=True)
+
     lock_owned = _acquire_pipeline_lock(pipeline_id)
     if not lock_owned:
+        err_msg = f"Worker không thể lấy khóa pipeline (đang bị chiếm bởi tác vụ khác). Dừng worker an toàn."
+        print(f"[{now_str}] [ERROR] {err_msg}", flush=True)
+        update_pipeline_status(status="failed", is_running=False, error=err_msg, step_title="Kẹt khóa pipeline")
         return
-    update_pipeline_status(pid=my_pid, is_running=True)
 
-    # 1. BƯỚC 3: Chạy Backtest đối chiếu thực tế với dự báo cũ
-    set_pipeline_step(
-        2,
-        "Đang đối chiếu độ chính xác",
-        f"Đang tính toán sai số MAE/MAPE trên các dự báo đã đến hạn...",
-        "running",
-    )
+    update_pipeline_status(pid=my_pid, is_running=True, status="running", error=None)
 
-    backtest_result = None
     try:
-        import backtest_worker as bw
-        from project_io import write_cache
-
-        # Quét lại file và tính toán
-        data_dir = ROOT / "datasets"
-        files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"] and not f.name.startswith("~$")]
-        hz_str = "_".join(str(x) for x in HORIZONS)
-        fingerprint = f"{len(files)}_{max(f.stat().st_mtime for f in files) if files else 0}_{hz_str}"
-
-        # Xác định cửa sổ đánh giá 365 ngày theo ngày dữ liệu mới nhất.
-        base_df = bw.load_df(bw.BUILTIN_CSV)
-        extra_dfs = [bw.load_df(f) for f in files]
-        date_candidates = []
-        for frame in [base_df] + extra_dfs:
-            if frame is not None and not frame.empty and "Ngày" in frame.columns:
-                date_candidates.append(frame["Ngày"].max())
-        latest_date = max(date_candidates) if date_candidates else datetime.datetime.now()
-        start_date = latest_date - datetime.timedelta(days=365)
-
-        # backtest_worker nhận đường dẫn và trả về đúng một DataFrame.
-        comb = bw.run_upload_simulation(
-            bw.BUILTIN_CSV,
-            files,
-            start_date,
-            sel_horizons=HORIZONS,
-            sel_models=["GUMNet"],
-            log_fn=lambda msg: None,
+        # 1. BƯỚC 3: Chạy Backtest đối chiếu thực tế với dự báo cũ
+        set_pipeline_step(
+            2,
+            "Đang đối chiếu độ chính xác",
+            "Đang tính toán sai số MAE/MAPE trên các dự báo đã đến hạn...",
+            "running",
         )
-        stats = _summarize_backtest(comb)
 
-        # Lưu cache đối chiếu
-        cache_path = ROOT / "simulation_cache.json"
-        write_cache(cache_path, fingerprint, comb)
+        backtest_result = None
+        try:
+            import backtest_worker as bw
+            from project_io import write_cache
 
-        mape_val = float(stats.get("mape", 0.0))
-        mae_val = float(stats.get("mae", 0.0))
-        pts_count = int(stats.get("total_pts", len(comb) if comb is not None else 0))
+            # Quét lại file và tính toán
+            data_dir = ROOT / "datasets"
+            files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"] and not f.name.startswith("~$")]
+            hz_str = "_".join(str(x) for x in HORIZONS)
+            fingerprint = f"{len(files)}_{max(f.stat().st_mtime for f in files) if files else 0}_{hz_str}"
 
-        backtest_result = {
-            "fingerprint": fingerprint,
-            "mape": round(mape_val, 2),
-            "mae": round(mae_val, 2),
-            "sample_count": pts_count,
-            "calculated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        update_pipeline_status(backtest_result=backtest_result)
-        time.sleep(1)  # Giãn nhẹ để người dùng kịp quan sát tiến trình
-    except Exception as e:
-        # Nếu backtest lỗi, giữ kết quả cũ và ghi nhận lỗi nhưng không ngắt toàn hệ thống
-        update_pipeline_status(
-            backtest_result={"error": f"Lỗi đối chiếu: {e}"},
-            error=f"Đối chiếu thực tế gặp sự cố: {e}. Dự báo hiện tại vẫn tiếp tục hoạt động.",
-        )
-        set_pipeline_step(2, "Đối chiếu chưa hoàn tất", "Kết quả cũ vẫn được giữ nguyên. Có thể thử lại sau.", "failed")
-        update_pipeline_status(status="failed", is_running=False)
-        _release_pipeline_lock(pipeline_id)
-        return
+            # Xác định cửa sổ đánh giá 365 ngày theo ngày dữ liệu mới nhất.
+            base_df = bw.load_df(bw.BUILTIN_CSV)
+            extra_dfs = [bw.load_df(f) for f in files]
+            date_candidates = []
+            for frame in [base_df] + extra_dfs:
+                if frame is not None and not frame.empty and "Ngày" in frame.columns:
+                    date_candidates.append(frame["Ngày"].max())
+            latest_date = max(date_candidates) if date_candidates else datetime.datetime.now()
+            start_date = latest_date - datetime.timedelta(days=365)
 
-    # 2. BƯỚC 4: Đánh giá nhu cầu huấn luyện lại
-    mape = backtest_result.get("mape", 0.0) if backtest_result else 0.0
-    samples = backtest_result.get("sample_count", 0) if backtest_result else 0
+            def _worker_log(msg: str):
+                now_t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[{now_t}] {msg}", flush=True)
 
-    retrain_needed = False
-    decision_reason = ""
+            # backtest_worker nhận đường dẫn và trả về đúng một DataFrame.
+            comb = bw.run_upload_simulation(
+                bw.BUILTIN_CSV,
+                files,
+                start_date,
+                sel_horizons=HORIZONS,
+                sel_models=["GUMNet"],
+                log_fn=_worker_log,
+            )
+            stats = _summarize_backtest(comb)
 
-    if new_rows < MIN_NEW_ROWS:
-        decision_reason = f"Dữ liệu mới ({new_rows} ngày) chưa đủ ngưỡng tối thiểu ({MIN_NEW_ROWS} ngày) để kích hoạt tối ưu."
-    elif samples < MIN_EVAL_PAIRS:
-        decision_reason = f"Chưa đủ số cặp đối chiếu dự báo ({samples}/{MIN_EVAL_PAIRS} cặp) để đánh giá độ tin cậy."
-    elif mape <= MAPE_RETRAIN_THRESHOLD:
-        decision_reason = f"Độ chính xác GUMNet hiện tại rất tốt (MAPE {mape:.2f}% ≤ ngưỡng {MAPE_RETRAIN_THRESHOLD}%). Giữ nguyên mô hình."
-    else:
-        retrain_needed = True
-        decision_reason = f"MAPE đạt {mape:.2f}% (vượt ngưỡng {MAPE_RETRAIN_THRESHOLD}%) và đủ {new_rows} ngày mới -> Tự động tối ưu GUMNet candidate."
+            # Lưu cache đối chiếu nguyên tử
+            cache_path = ROOT / "simulation_cache.json"
+            write_cache(cache_path, fingerprint, comb)
 
-    update_pipeline_status(retrain_decision={"needed": retrain_needed, "reason": decision_reason})
+            mape_val = float(stats.get("mape", 0.0))
+            mae_val = float(stats.get("mae", 0.0))
+            pts_count = int(stats.get("total_pts", len(comb) if comb is not None else 0))
 
-    if not retrain_needed:
-        # Không cần huấn luyện -> Hoàn tất ngay
+            backtest_result = {
+                "fingerprint": fingerprint,
+                "mape": round(mape_val, 2),
+                "mae": round(mae_val, 2),
+                "sample_count": pts_count,
+                "calculated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            update_pipeline_status(backtest_result=backtest_result)
+        except Exception as e:
+            import traceback
+            tb_err = traceback.format_exc()
+            print(f"[{datetime.datetime.now()}] [ERROR] Lỗi đối chiếu backtest: {tb_err}", flush=True)
+            update_pipeline_status(
+                backtest_result={"error": f"Lỗi đối chiếu: {e}"},
+                error=f"Đối chiếu thực tế gặp sự cố: {e}. Dự báo hiện tại vẫn tiếp tục hoạt động.",
+            )
+            set_pipeline_step(2, "Đối chiếu chưa hoàn tất", "Kết quả cũ vẫn được giữ nguyên. Có thể thử lại sau.", "failed")
+            update_pipeline_status(status="failed", is_running=False)
+            return
+
+        # 2. BƯỚC 4: Đánh giá nhu cầu huấn luyện lại
+        mape = backtest_result.get("mape", 0.0) if backtest_result else 0.0
+        samples = backtest_result.get("sample_count", 0) if backtest_result else 0
+
+        retrain_needed = False
+        decision_reason = ""
+
+        if force_retrain:
+            retrain_needed = True
+            decision_reason = f"Kích hoạt tối ưu GUMNet thủ công theo yêu cầu (MAPE hiện tại: {mape:.2f}%)."
+        elif new_rows < MIN_NEW_ROWS:
+            decision_reason = f"Dữ liệu mới ({new_rows} ngày) chưa đủ ngưỡng tối thiểu ({MIN_NEW_ROWS} ngày) để kích hoạt tối ưu."
+        elif samples < MIN_EVAL_PAIRS:
+            decision_reason = f"Chưa đủ số cặp đối chiếu dự báo ({samples}/{MIN_EVAL_PAIRS} cặp) để đánh giá độ tin cậy."
+        elif mape <= MAPE_RETRAIN_THRESHOLD:
+            decision_reason = f"Độ chính xác GUMNet hiện tại rất tốt (MAPE {mape:.2f}% ≤ ngưỡng {MAPE_RETRAIN_THRESHOLD}%). Giữ nguyên mô hình chuẩn."
+        else:
+            retrain_needed = True
+            decision_reason = f"MAPE đạt {mape:.2f}% (vượt ngưỡng {MAPE_RETRAIN_THRESHOLD}%) và đủ {new_rows} ngày mới -> Tự động tối ưu GUMNet candidate."
+
+        update_pipeline_status(retrain_decision={"needed": retrain_needed, "reason": decision_reason})
+
+        if not retrain_needed:
+            # Không cần huấn luyện -> Hoàn tất ngay
+            set_pipeline_step(
+                3,
+                "Không cần tối ưu GUMNet",
+                decision_reason,
+                "done",
+            )
+            time.sleep(1)
+            set_pipeline_step(
+                4,
+                "Hoàn tất",
+                f"Dữ liệu đã cập nhật ({samples} điểm đối chiếu). GUMNet hiện tại đạt MAPE {mape:.2f}% (dưới ngưỡng 10%) nên tiếp tục được giữ làm mô hình chuẩn.",
+                "done",
+            )
+            update_pipeline_status(status="complete", is_running=False)
+            print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [INFO] Hoàn tất pipeline an toàn (không cần huấn luyện).", flush=True)
+            return
+
+        # 3. NẾU CẦN HUẤN LUYỆN: Huấn luyện GUMNet Candidate ngầm
         set_pipeline_step(
             3,
-            "Không cần tối ưu GUMNet",
-            decision_reason,
+            "Đang tối ưu GUMNet Candidate",
+            f"MAPE hiện tại ({mape:.2f}%). Đang huấn luyện candidate ngầm...",
+            "running",
+        )
+
+        candidate_job_id = f"CAND-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        candidate_out_dir = CANDIDATE_DIR / candidate_job_id
+        candidate_out_dir.mkdir(parents=True, exist_ok=True)
+
+        production_losses = _production_losses()
+
+        backup_job_dir = BACKUP_DIR / candidate_job_id
+        backup_job_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for horizon in HORIZONS:
+                source = CKPT_DIR / f"gumnet_h{horizon}.pt"
+                if not source.exists():
+                    raise FileNotFoundError(source)
+                shutil.copy2(source, backup_job_dir / source.name)
+                shutil.copy2(source, candidate_out_dir / source.name)
+        except Exception as exc:
+            update_pipeline_status(status="failed", is_running=False, error=f"Không thể tạo bản sao lưu: {exc}")
+            set_pipeline_step(3, "Không thể tạo bản sao lưu", "GUMNet hiện tại không bị thay đổi.", "failed")
+            return
+
+        cmd_train = [
+            sys.executable,
+            "-u",
+            str(ROOT / "train_all_horizons.py"),
+            "--job-id",
+            candidate_job_id,
+            "--models",
+            "GUMNet",
+            "--horizons",
+            "1", "5", "10", "15", "20", "30", "60",
+            "--output_dir",
+            str(candidate_out_dir),
+        ]
+
+        train_success = False
+        try:
+            proc_train = subprocess.run(
+                cmd_train,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=600,
+            )
+            train_success = (proc_train.returncode == 0)
+        except Exception as e:
+            print(f"[{datetime.datetime.now()}] [ERROR] Huấn luyện candidate lỗi: {e}", flush=True)
+            train_success = False
+
+        candidate_promoted = False
+        candidate_msg = ""
+
+        if train_success:
+            try:
+                candidate_losses = _validate_candidate(candidate_out_dir, candidate_job_id)
+                if _candidate_is_better(candidate_losses, production_losses):
+                    _promote_with_rollback(candidate_out_dir, backup_job_dir)
+                    candidate_promoted = True
+                    candidate_msg = "GUMNet Candidate đã được xác thực, tốt hơn Production và đã được áp dụng."
+                elif production_losses is None:
+                    candidate_msg = "Không có chỉ số baseline Production đáng tin cậy; giữ nguyên model hiện tại để an toàn."
+                else:
+                    candidate_msg = "Candidate không tốt hơn GUMNet Production trên cùng tiêu chí; giữ nguyên model hiện tại."
+            except Exception as exc:
+                candidate_msg = f"Candidate không vượt qua kiểm tra ({exc}). Giữ nguyên Production hiện tại."
+        else:
+            candidate_msg = "Tối ưu candidate không thành công. GUMNet Production hiện tại tiếp tục hoạt động an toàn."
+
+        update_pipeline_status(
+            candidate_result={
+                "promoted": candidate_promoted,
+                "details": candidate_msg,
+                "candidate_job_id": candidate_job_id,
+            }
+        )
+
+        # Hoàn tất
+        set_pipeline_step(
+            3,
+            "Đã tối ưu GUMNet" if candidate_promoted else "Giữ nguyên GUMNet hiện tại",
+            candidate_msg,
             "done",
         )
         time.sleep(1)
         set_pipeline_step(
             4,
             "Hoàn tất",
-            f"Dữ liệu đã cập nhật. GUMNet hiện tại tiếp tục phục vụ dự báo (MAPE: {mape:.2f}%).",
+            f"Quy trình xử lý hoàn tất. {candidate_msg}",
             "done",
         )
         update_pipeline_status(status="complete", is_running=False)
-        _release_pipeline_lock(pipeline_id)
-        return
-
-    # 3. NẾU CẦN HUẤN LUYỆN: Huấn luyện GUMNet Candidate ngầm
-    set_pipeline_step(
-        3,
-        "Đang tối ưu GUMNet Candidate",
-        f"MAPE hiện tại ({mape:.2f}%) cần cải thiện. Đang huấn luyện candidate ngầm...",
-        "running",
-    )
-
-    candidate_job_id = f"CAND-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    candidate_out_dir = CANDIDATE_DIR / candidate_job_id
-    candidate_out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Baseline production phải đọc được trước khi huấn luyện. Không có baseline
-    # thì vẫn có thể tạo candidate để kiểm tra, nhưng tuyệt đối không auto-promote.
-    production_losses = _production_losses()
-
-    # Sao lưu an toàn Production hiện tại
-    backup_job_dir = BACKUP_DIR / candidate_job_id
-    backup_job_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        for horizon in HORIZONS:
-            source = CKPT_DIR / f"gumnet_h{horizon}.pt"
-            if not source.exists():
-                raise FileNotFoundError(source)
-            shutil.copy2(source, backup_job_dir / source.name)
-            # Seed candidate bằng production hiện tại để đây là finetune thật,
-            # không phải train ngẫu nhiên từ đầu trong output_dir rỗng.
-            shutil.copy2(source, candidate_out_dir / source.name)
-    except Exception as exc:
-        update_pipeline_status(status="failed", is_running=False, error=f"Không thể tạo bản an toàn: {exc}")
-        set_pipeline_step(3, "Không thể tạo bản an toàn", "GUMNet hiện tại không bị thay đổi.", "failed")
-        _release_pipeline_lock(pipeline_id)
-        return
-
-    # Huấn luyện Candidate
-    cmd_train = [
-        sys.executable,
-        "-u",
-        str(ROOT / "train_all_horizons.py"),
-        "--job-id",
-        candidate_job_id,
-        "--models",
-        "GUMNet",
-        "--horizons",
-        "1", "5", "10", "15", "20", "30", "60",
-        "--output_dir",
-        str(candidate_out_dir),
-    ]
-
-    train_success = False
-    try:
-        proc_train = subprocess.run(
-            cmd_train,
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,  # 5 phút tối đa cho demo
+        print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [INFO] Worker đã kết thúc: {candidate_msg}", flush=True)
+    except Exception as general_err:
+        import traceback
+        tb_str = traceback.format_exc()
+        print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CRITICAL] Lỗi không mong đợi trong worker: {tb_str}", flush=True)
+        update_pipeline_status(
+            status="failed",
+            is_running=False,
+            error=f"Tiến trình bị gián đoạn: {general_err}",
+            step_title="Sự cố xử lý",
         )
-        train_success = (proc_train.returncode == 0)
-    except Exception as e:
-        train_success = False
-
-    # Đánh giá Candidate
-    candidate_promoted = False
-    candidate_msg = ""
-
-    if train_success:
-        try:
-            candidate_losses = _validate_candidate(candidate_out_dir, candidate_job_id)
-            if _candidate_is_better(candidate_losses, production_losses):
-                _promote_with_rollback(candidate_out_dir, backup_job_dir)
-                candidate_promoted = True
-                candidate_msg = "GUMNet Candidate đã được xác thực, tốt hơn Production và đã được áp dụng."
-            elif production_losses is None:
-                candidate_msg = "Không có chỉ số baseline Production đáng tin cậy; giữ nguyên model hiện tại để an toàn."
-            else:
-                candidate_msg = "Candidate không tốt hơn GUMNet Production trên cùng tiêu chí; giữ nguyên model hiện tại."
-        except Exception as exc:
-            candidate_msg = f"Candidate không vượt qua kiểm tra ({exc}). Giữ nguyên Production hiện tại."
-    else:
-        candidate_msg = "Tối ưu candidate không thành công. GUMNet Production hiện tại tiếp tục hoạt động an toàn."
-
-    update_pipeline_status(
-        candidate_result={
-            "promoted": candidate_promoted,
-            "details": candidate_msg,
-            "candidate_job_id": candidate_job_id,
-        }
-    )
-
-    # Hoàn tất
-    set_pipeline_step(
-        3,
-        "Đã tối ưu GUMNet" if candidate_promoted else "Giữ nguyên GUMNet hiện tại",
-        candidate_msg,
-        "done",
-    )
-    time.sleep(1)
-    set_pipeline_step(
-        4,
-        "Hoàn tất",
-        f"Quy trình xử lý hoàn tất. {candidate_msg}",
-        "done",
-    )
-    update_pipeline_status(status="complete", is_running=False)
-    _release_pipeline_lock(pipeline_id)
+    finally:
+        _release_pipeline_lock(pipeline_id)
+        print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [INFO] Đã giải phóng khóa an toàn {pipeline_id}.", flush=True)
 
 
 if __name__ == "__main__":
@@ -623,6 +720,7 @@ if __name__ == "__main__":
     parser.add_argument("--pipeline-id", type=str, required=True)
     parser.add_argument("--batch-id", type=str, required=True)
     parser.add_argument("--new-rows", type=int, default=0)
+    parser.add_argument("--force-retrain", action="store_true", default=False)
     args = parser.parse_args()
 
-    run_pipeline_task(args.pipeline_id, args.batch_id, args.new_rows)
+    run_pipeline_task(args.pipeline_id, args.batch_id, args.new_rows, args.force_retrain)

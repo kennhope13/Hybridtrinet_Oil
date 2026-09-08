@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 output.txt
 sim_log.txt
+.pipeline.lock
+.pipeline_status.json
+.backtest.lock
+.backtest_job.json
+pipeline_worker.log
+simulation_cache.json
+ingestion_history.json
+*.tmp
+*.backup_*
