@@ -261,6 +261,38 @@ def get_pipeline_status() -> Dict[str, Any]:
         return default_state
 
 
+def reset_pipeline_status() -> Dict[str, Any]:
+    """Đặt lại trạng thái Pipeline về mặc định (idle) và dọn khóa an toàn."""
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    default_state = {
+        "pipeline_id": None,
+        "status": "idle",
+        "step_index": 0,
+        "step_title": "Sẵn sàng",
+        "details": "Hệ thống sẵn sàng tiếp nhận dữ liệu mới.",
+        "steps": [
+            {"title": "File hợp lệ", "state": "waiting"},
+            {"title": "Đã cập nhật dữ liệu", "state": "waiting"},
+            {"title": "Đối chiếu độ chính xác", "state": "waiting"},
+            {"title": "Tối ưu GUMNet nếu cần", "state": "waiting"},
+            {"title": "Hoàn tất", "state": "waiting"},
+        ],
+        "is_running": False,
+        "started_at": None,
+        "updated_at": None,
+        "batch_info": None,
+        "backtest_result": None,
+        "retrain_decision": None,
+        "candidate_result": None,
+        "error": None,
+    }
+    _atomic_write_json(STATUS_FILE, default_state)
+    return default_state
+
+
 def update_pipeline_status(**fields) -> Dict[str, Any]:
     """Cập nhật trạng thái Pipeline một cách nguyên tử."""
     current = get_pipeline_status()

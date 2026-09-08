@@ -2025,8 +2025,21 @@ def render_global_pipeline_banner():
     banner_border = "#bbf7d0" if st_val == "complete" else ("#fecdd3" if st_val == "failed" else "#99f6e4")
     border_left_color = "#16a34a" if st_val == "complete" else ("#e11d48" if st_val == "failed" else "#0d9488")
 
+    if st_val == "failed":
+        tip_text = "⚠️ Tiến trình gặp sự cố hoặc bị gián đoạn. Bấm nút bên dưới để đóng và đặt lại ban đầu."
+        tip_color = "#b91c1c"
+        tip_bg = "#fee2e2"
+    elif st_val == "complete":
+        tip_text = "✅ Đợt xử lý đã hoàn tất thành công. Bạn có thể xem kết quả hoặc đóng thông báo."
+        tip_color = "#047857"
+        tip_bg = "#d1fae5"
+    else:
+        tip_text = "💡 Trang sẽ tự mở lại khi xử lý xong, không cần bấm gì thêm."
+        tip_color = "#087762"
+        tip_bg = "rgba(0,173,145,0.08)"
+
     st.markdown(f"""
-    <div style="background:{banner_bg}; border:1px solid {banner_border}; border-left:5px solid {border_left_color}; border-radius:10px; padding:12px 18px; margin-bottom:20px; box-shadow:0 2px 6px rgba(0,0,0,0.03);">
+    <div style="background:{banner_bg}; border:1px solid {banner_border}; border-left:5px solid {border_left_color}; border-radius:10px; padding:12px 18px; margin-bottom:12px; box-shadow:0 2px 6px rgba(0,0,0,0.03);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
             <div style="font-size:13px; font-weight:800; color:#0f172a; text-transform:uppercase; letter-spacing:0.04em;">
                 TIẾN TRÌNH HỆ THỐNG: <span style="color:{border_left_color};">{step_title}</span>
@@ -2038,10 +2051,19 @@ def render_global_pipeline_banner():
         </div>
         <div style="margin-top:8px; font-size:12.5px; color:#334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
             <span>{details}</span>
-            <span style="color:#087762; font-weight:600; font-size:12px; background:rgba(0,173,145,0.08); padding:3px 8px; border-radius:6px;">💡 Trang sẽ tự mở lại khi xử lý xong, không cần bấm gì thêm.</span>
+            <span style="color:{tip_color}; font-weight:600; font-size:12px; background:{tip_bg}; padding:3px 8px; border-radius:6px;">{tip_text}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Nút đóng hoặc đặt lại trạng thái khi tiến trình không còn chạy thật
+    if (st_val in ("failed", "complete") or not is_running) and st_val != "idle":
+        _col_space, _col_btn = st.columns([3.2, 1.3])
+        with _col_btn:
+            btn_label = "✕ Đóng thông báo & Đặt lại" if st_val == "failed" else "✕ Đóng thông báo"
+            if st.button(btn_label, key="btn_dismiss_pipeline_banner", use_container_width=True):
+                pipeline_engine.reset_pipeline_status()
+                st.rerun()
 
     return is_running
 
