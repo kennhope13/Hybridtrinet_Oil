@@ -1,4 +1,9 @@
 from pathlib import Path
+import argparse
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_io import load_checkpoint
 
 import numpy as np
 import pandas as pd
@@ -9,7 +14,7 @@ from src.model.model import GUMNet
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "data" / "processed" / "clean_data_exo_ver1.csv"
-CKPT_PATH = BASE_DIR / "checkpoints" / "gumnet_ckpt.pt"
+CKPT_DIR = BASE_DIR.parent / "checkpoints_multi"
 OUT_PATH = BASE_DIR / "results" / "forecast.csv"
 
 
@@ -42,14 +47,19 @@ def next_business_days(last_date: pd.Timestamp, n: int):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--horizon", type=int, default=1, choices=[1, 5, 10, 15, 20, 30, 60])
+    args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
+    ckpt = load_checkpoint(CKPT_DIR / f"gumnet_h{args.horizon}.pt", map_location=device)
 
     date_col = ckpt["date_col"]
     feature_cols = ckpt["feature_cols"]
     target_cols = ckpt["target_cols"]
 
     df = read_data(DATA_PATH, date_col)
+    if len(df) < ckpt["seq_len"]:
+        raise ValueError(f"Need at least {ckpt['seq_len']} rows for prediction")
 
     model = GUMNet(
         seq_len=ckpt["seq_len"],
@@ -57,6 +67,7 @@ def main():
         output_dim=ckpt["output_dim"],
         horizon=ckpt["horizon"],
         num_quantiles=ckpt["num_quantiles"],
+        d_feat=ckpt.get("d_feat", 64),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()

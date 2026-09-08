@@ -2,7 +2,7 @@
 Multi-Model Oil Price Forecast – Evaluation Hub (Robust Version)
 """
 
-import sys, json, importlib, warnings, os, logging
+import sys, json, importlib, warnings, os, logging, uuid, subprocess, re, time, hashlib
 
 # Tắt toàn bộ cảnh báo (scikit-learn version, streamlit deprecation, etc.) để Terminal luôn sạch đẹp
 warnings.filterwarnings("ignore")
@@ -21,6 +21,10 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import torch
+
+from project_io import load_checkpoint, read_cache, write_cache, save_upload
+import data_pipeline
+import pipeline_engine
 
 st.set_page_config(
     page_title="Oil Forecast – Automated Evaluation Hub",
@@ -381,7 +385,7 @@ def inject_oil_tour_engine(current_page=""):
             forecast: [
                 {
                     title: "1. Kéo thả file dữ liệu thị trường",
-                    text: "Kéo thả file Excel (.xlsx) hoặc CSV giá dầu mới nhất vào đây. Hệ thống tự động làm sạch và tính toán ngay dự báo 7 mốc mà không cần bấm thêm nút nào.",
+                    text: "Kéo thả file Excel (.xlsx) hoặc CSV vào đây. Xem kết quả kiểm tra file, sau đó bấm nút cập nhật để hệ thống xử lý dữ liệu và tạo dự báo 7 mốc.",
                     selector: '[data-testid="stFileUploader"], .stFileUploader'
                 },
                 {
@@ -403,30 +407,13 @@ def inject_oil_tour_engine(current_page=""):
             metrics: [
                 {
                     title: "1. Đọc chỉ số sai số (MAPE & MAE)",
-                    text: "Theo dõi sai số giữa giá AI đoán và giá thị trường. Ngưỡng an toàn: MAPE < 7% (Xanh lá - Rất tốt). Nếu MAPE > 10% (Đỏ), khuyến nghị sang trang Huấn luyện để Finetune.",
+                    text: "Theo dõi sai số giữa dự báo và giá thị trường. MAPE dưới 7% được hiển thị màu xanh theo ngưỡng cấu hình; trên 10% hệ thống sẽ xem xét tối ưu GUMNet Candidate khi đủ dữ liệu.",
                     selector: '[data-testid="stHorizontalBlock"], [data-testid="column"], [data-testid="stMetric"]'
                 },
                 {
                     title: "2. Phân tích chi tiết theo Mốc, Mặt hàng & Xu hướng",
                     text: "Bảng nhiệt bên dưới phân rã sai số theo từng mốc thời gian và từng loại dầu. Biểu đồ đường cho thấy xu hướng sai số tăng tự nhiên ở các mốc tương lai xa (+60 ngày).",
                     selector: '[data-testid="stPlotlyChart"], [data-testid="stDataFrame"]'
-                }
-            ],
-            training: [
-                {
-                    title: "1. Chọn cấu hình & Chế độ huấn luyện",
-                    text: "Khuyến nghị chọn 'Finetune từ checkpoint' để cập nhật nhanh quy luật mới (%%HW_TOUR_STR%%). Hệ thống đã tự động chọn số Epochs và đủ cả 7 mốc.",
-                    selector: '[data-baseweb="tab-list"], .stTabs'
-                },
-                {
-                    title: "2. Khởi chạy Job Huấn Luyện ngầm",
-                    text: "Nhấn nút 'Bắt đầu Job' để tiến trình tối ưu hóa chạy độc lập trong nền. Bạn có thể theo dõi tiến độ từng mốc qua thanh phần trăm trực quan.",
-                    selector: '[data-testid="stButton"] button, button[kind="primary"]'
-                },
-                {
-                    title: "3. Lịch sử & Đối chiếu Benchmarking",
-                    text: "Xem lại tệp dữ liệu đã nạp tại Tab 2 và chuyển sang Tab 3 để so sánh phiên mới vs phiên cũ — đo lường mức độ cải thiện sai số (% Giảm sai số màu xanh lá).",
-                    selector: '[data-baseweb="tab"]:nth-of-type(3), [role="tab"]:nth-of-type(3), [data-baseweb="tab-list"] button:nth-of-type(3), [data-baseweb="tab-list"]'
                 }
             ],
             history: [
@@ -676,7 +663,6 @@ def inject_oil_tour_engine(current_page=""):
                 forecast: "Dự báo",
                 metrics: "Đánh giá",
                 history: "Lịch sử",
-                training: "Huấn luyện",
                 guide: "Hướng dẫn"
             };
             const keyword = pageKeywords[tourKey] || "Dự báo";
@@ -794,7 +780,7 @@ def inject_oil_tour_engine(current_page=""):
     <!-- current_page: """ + str(current_page) + """ -->
     """
     _is_gpu = torch.cuda.is_available()
-    _hw_tour_str = "tốc độ tối ưu cực nhanh 10–20 giây/mốc trên GPU NVIDIA CUDA" if _is_gpu else "khoảng 1–2 phút/mốc trên CPU 6 vCPUs"
+    _hw_tour_str = "thời gian tham khảo 10–20 giây/mốc trên GPU NVIDIA CUDA" if _is_gpu else "thời gian tham khảo khoảng 1–2 phút/mốc trên CPU 6 vCPUs"
     tour_script = tour_script.replace("%%HW_TOUR_STR%%", _hw_tour_str)
     components.html(tour_script, height=0, width=0)
 
@@ -927,6 +913,29 @@ def load_df(path):
         return pd.DataFrame()
     mtime = path.stat().st_mtime
     return _cached_load_df(str(path), mtime)
+
+def preview_uploaded_dates(uploaded_file):
+    """Đọc nhanh khoảng ngày (min, max) của 1 file vừa CHỌN (chưa lưu ra đĩa, chưa xử lý gì) —
+    dùng để người dùng xem trước file mới hay cũ trước khi bấm nút xử lý thật sự.
+    """
+    try:
+        uploaded_file.seek(0)
+        if uploaded_file.name.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(uploaded_file)
+        else:
+            df = pd.read_csv(uploaded_file, encoding="utf-8")
+        df.columns = [str(c).strip() for c in df.columns]
+        potential_date_cols = [c for c in df.columns if any(x in c.lower() for x in ["ng", "date", "time"])]
+        if not potential_date_cols:
+            return None, None
+        dates = pd.to_datetime(df[potential_date_cols[0]], errors="coerce", format="mixed").dropna()
+        if dates.empty:
+            return None, None
+        return dates.min(), dates.max()
+    except Exception:
+        return None, None
+    finally:
+        uploaded_file.seek(0)
 
 def generate_time_features(df):
     if DATE_COL not in df.columns: return df
@@ -1091,12 +1100,16 @@ def predict_from_df(model, meta, df, device):
 
 # === SIMULATION ENGINE ===
 
-def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None):
+def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None, sel_models=None):
     # Lỗi #13 (đã xác nhận): trước đây dùng biến `sel_horizons` mà hàm này không nhận làm tham
     # số và cũng không phải biến global -> NameError mỗi khi có dữ liệu mới cần backtest, bị
     # nuốt bởi except bên dưới khiến toàn bộ tính năng "Đánh giá mô hình" luôn thất bại âm thầm.
     if sel_horizons is None or len(sel_horizons) == 0:
         sel_horizons = HORIZONS
+    # Trước đây hàm này luôn lặp qua TOÀN BỘ MODEL_DEFS (cả GUMNet lẫn HybridTriNet) bất kể người
+    # dùng đang chọn model nào ở sidebar — khiến việc đối chiếu chạy lâu gấp đôi không cần thiết.
+    if sel_models is None or len(sel_models) == 0:
+        sel_models = list(MODEL_DEFS.keys())
     base_full = load_df(base_path)
     base = base_full[base_full[DATE_COL] < start_date].copy()
     all_records = []
@@ -1107,14 +1120,16 @@ def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None
         df_tmp = load_df(fp)
         if not df_tmp.empty:
             actual_dfs.append(df_tmp)
-    full_actuals = pd.concat(actual_dfs, ignore_index=True).drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL)
+    # keep="last": file upload (nằm sau base_full trong actual_dfs) phải thắng dữ liệu gốc
+    # khi trùng ngày, để tính năng "xác nhận ghi đè ngày cũ" có tác dụng thật.
+    full_actuals = pd.concat(actual_dfs, ignore_index=True).drop_duplicates(subset=[DATE_COL], keep="last").sort_values(DATE_COL)
     
     with open(ROOT / "sim_log.txt", "w", encoding="utf-8") as logf:
         logf.write(f"Simulation started. Files: {len(upload_files)}\n")
         
         status_text = st.empty()
         task_idx = 0
-        total_tasks = len(upload_files) * len(MODEL_DEFS)
+        total_tasks = len(upload_files) * len(sel_models)
 
         
         for idx, fpath in enumerate(upload_files):
@@ -1139,7 +1154,7 @@ def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None
                 base_for_pred = base_for_pred.drop_duplicates(subset=[DATE_COL]).sort_values(DATE_COL).tail(500)
                 base_enriched = enrich_with_exo(base_for_pred, base_full)
 
-                for mname in MODEL_DEFS:
+                for mname in sel_models:
                     task_idx += 1
                     try:
                         match_data = []
@@ -1230,7 +1245,9 @@ def show_live_forecasts(base_full, file_paths, sel_models, sel_horizons=None):
     for fdf in upload_dfs:
         latest_df = pd.concat([latest_df, fdf])
         
-    latest_df = latest_df.drop_duplicates(DATE_COL).sort_values(DATE_COL).reset_index(drop=True)
+    # keep="last": file upload (nối sau base_full) phải thắng dữ liệu gốc khi trùng ngày,
+    # để tính năng "xác nhận ghi đè ngày cũ" hiển thị đúng giá đã cập nhật.
+    latest_df = latest_df.drop_duplicates(subset=[DATE_COL], keep="last").sort_values(DATE_COL).reset_index(drop=True)
     
     # CẮT DỮ LIỆU ĐẾN NGÀY UPLOAD CUỐI CÙNG (Để dự báo từ mốc file upload)
     latest_df = latest_df[latest_df[DATE_COL] <= upload_max_date]
@@ -1417,17 +1434,40 @@ st.markdown("""
         color: #1e293b;
         order: -2;
     }
-    /* Ẩn icon nhỏ mặc định trong nút (đã có icon lớn ở trên), đổi chữ nút "Upload" -> "Chọn file dữ liệu" */
+    /* Ẩn icon nhỏ mặc định trong nút (đã có icon lớn ở trên). Theo yêu cầu: đổi hẳn nút chữ
+       "Chọn file dữ liệu" thành 1 icon vuông dấu "+" thay vì nút chữ như trước. */
     section[data-testid="stFileUploaderDropzone"] span[data-testid="stIconMaterial"] {
         display: none !important;
     }
+    section[data-testid="stFileUploaderDropzone"] button[data-testid="stBaseButton-secondary"] {
+        width: 40px !important;
+        height: 40px !important;
+        min-width: 40px !important;
+        min-height: 40px !important;
+        padding: 0 !important;
+        border-radius: 8px !important;
+        position: relative !important;
+    }
+    /* Thẻ <p> chứa chữ do Streamlit tự render không thật sự rộng bằng cả nút (chỉ vừa khít
+       chữ), nên set display:flex/width:100% trên chính nó không đủ để canh giữa — ép nó phủ
+       kín toàn bộ nút bằng position:absolute mới canh giữa đúng, không lệch. */
     section[data-testid="stFileUploaderDropzone"] button[data-testid="stBaseButton-secondary"] p {
         font-size: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 0 !important;
+        position: absolute !important;
+        inset: 0 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
     }
     section[data-testid="stFileUploaderDropzone"] button[data-testid="stBaseButton-secondary"] p::after {
-        content: "Chọn file dữ liệu";
-        font-size: 13px !important;
-        font-weight: 600;
+        content: "+";
+        font-size: 22px !important;
+        font-weight: 800;
+        line-height: 1 !important;
+        color: #00ad91;
     }
     /* "200MB per file..." đã có sẵn ở ô "Dung lượng tối đa" bên dưới nên ẩn dòng trùng lặp này đi,
        thay bằng phụ đề "hoặc bấm để chọn file từ máy tính" đúng theo bản thiết kế */
@@ -1443,7 +1483,25 @@ st.markdown("""
     div[data-testid="stFileUploaderDropzoneInstructions"] {
         order: -1;
     }
-    
+    /* Icon "+" ngay cạnh (các) file đã chọn — gợi ý trực quan là vẫn bấm/kéo thêm được file
+       khác, tránh người dùng tưởng ô này chỉ chọn được đúng 1 file. Chỉ là icon minh họa
+       (::after không bấm được) — thao tác thêm file thật vẫn qua nút/khung phía trên. */
+    div[data-testid="stFileChips"]::after {
+        content: "+";
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        margin-left: 4px;
+        border: 1.5px dashed #00ad91;
+        border-radius: 50%;
+        color: #00ad91;
+        font-size: 15px;
+        font-weight: 800;
+        flex-shrink: 0;
+    }
+
     /* Elegant buttons */
     .stButton > button {
         border: 1px solid rgba(0, 173, 145, 0.25) !important;
@@ -1490,7 +1548,7 @@ st.markdown("""
 # Lưu base_full gốc để dùng cho live forecast
 base_full_orig = load_df(BUILTIN_CSV)
 
-CACHE_FILE = ROOT / "simulation_cache.pkl"
+CACHE_FILE = ROOT / "simulation_cache.json"
 
 # Khóa job huấn luyện bằng file trên đĩa: đây là app LAN nhiều người cùng truy cập chung
 # một server Streamlit, nên khóa phải chặn được cả những phiên/tab khác, không chỉ session
@@ -1520,32 +1578,168 @@ def get_active_training_lock():
         pid = info.get("pid")
         if pid and _pid_alive(pid):
             return info
+        # Nếu pid chưa được gán (vừa tạo để giữ chỗ trước khi Popen)
+        if pid is None and info.get("job_id"):
+            started = pd.to_datetime(info.get("started_at"), errors="coerce")
+            if pd.notna(started) and (pd.Timestamp.now() - started).total_seconds() < 30:
+                return info
     except Exception:
         pass
     # Lock rác (job cũ bị crash/kill mà không dọn được) -> xoá để không khoá cứng vĩnh viễn
     try:
-        TRAIN_LOCK_FILE.unlink()
+        TRAIN_LOCK_FILE.unlink(missing_ok=True)
     except Exception:
         pass
     return None
 
-def acquire_training_lock(models, horizons, pid=None):
-    # Lỗi #16 (đã xác nhận): trước đây luôn ghi os.getpid() — PID của chính tiến trình Streamlit
-    # server (luôn sống), không phải PID của tiến trình huấn luyện con thật (subprocess.Popen).
-    # Cho phép truyền pid thật vào để _pid_alive() kiểm tra đúng đối tượng; khi chưa có subprocess
-    # (giữ chỗ trước khi Popen chạy) thì tạm dùng os.getpid() để tránh race giữa 2 người dùng.
-    TRAIN_LOCK_FILE.write_text(json.dumps({
-        "pid": pid if pid is not None else os.getpid(),
+def acquire_training_lock(models, horizons, job_id=None, pid=None):
+    """
+    Tạo khóa huấn luyện nguyên tử (mode='x') hoặc cập nhật PID cho job_id hiện tại.
+    Trả về job_id.
+    """
+    active = get_active_training_lock()
+    if active:
+        # Nếu cùng job_id thì cho phép cập nhật PID
+        if job_id and active.get("job_id") == job_id:
+            active["pid"] = pid or active.get("pid")
+            active["models"] = models
+            active["horizons"] = horizons
+            tmp = TRAIN_LOCK_FILE.with_suffix(".lock.tmp")
+            tmp.write_text(json.dumps(active, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, TRAIN_LOCK_FILE)
+            return job_id
+        raise RuntimeError(f"Một tiến trình huấn luyện khác (Job ID: {active.get('job_id')}) đang chạy.")
+
+    actual_job_id = job_id or uuid.uuid4().hex[:12]
+    data = {
+        "job_id": actual_job_id,
+        "pid": pid,
         "models": models,
         "horizons": horizons,
         "started_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }), encoding="utf-8")
+    }
+    content = json.dumps(data, ensure_ascii=False, indent=2)
 
-def release_training_lock():
     try:
-        TRAIN_LOCK_FILE.unlink()
+        with open(TRAIN_LOCK_FILE, mode="x", encoding="utf-8") as f:
+            f.write(content)
+    except FileExistsError:
+        active = get_active_training_lock()
+        if active and active.get("job_id") != actual_job_id:
+            raise RuntimeError(f"Một tiến trình huấn luyện khác (Job ID: {active.get('job_id')}) vừa chiếm quyền chạy.")
+        tmp = TRAIN_LOCK_FILE.with_suffix(".lock.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, TRAIN_LOCK_FILE)
+
+    return actual_job_id
+
+def release_training_lock(job_id=None):
+    if not TRAIN_LOCK_FILE.exists():
+        return
+    try:
+        info = json.loads(TRAIN_LOCK_FILE.read_text(encoding="utf-8"))
+        if job_id is not None and info.get("job_id") != job_id:
+            # Không được xóa lock của job khác!
+            return
+        TRAIN_LOCK_FILE.unlink(missing_ok=True)
     except Exception:
         pass
+
+CKPT_BACKUP_DIR = ROOT / "checkpoints_backup"
+CKPT_BACKUP_KEEP = 5  # chỉ giữ lại N bản sao lưu gần nhất, tự dọn bản cũ hơn để không phình đĩa
+
+def backup_checkpoints_before_training(job_id, models, horizons):
+    """Sao lưu đúng các checkpoint (+ metadata Hybrid) SẮP bị job này ghi đè, trước khi huấn
+    luyện — để có thể khôi phục nếu model mới ra kết quả tệ hơn. Không sao lưu toàn bộ thư mục
+    (tốn chỗ, chậm) — chỉ sao lưu đúng phần liên quan tới lựa chọn hiện tại.
+    """
+    import shutil
+    dest = CKPT_BACKUP_DIR / job_id
+    dest.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for h in horizons:
+        for m in models:
+            prefix = "gumnet" if m == "GUMNet" else "hybrid"
+            ckpt_f = ROOT / "checkpoints_multi" / f"{prefix}_h{h}.pt"
+            if ckpt_f.exists():
+                shutil.copy2(ckpt_f, dest / ckpt_f.name)
+                saved.append(ckpt_f.name)
+            if m != "GUMNet":
+                meta_dir = ROOT / "checkpoints_multi" / f"hybrid_h{h}_meta"
+                if meta_dir.exists():
+                    shutil.copytree(meta_dir, dest / meta_dir.name, dirs_exist_ok=True)
+    # Dọn bớt bản sao lưu cũ, chỉ giữ CKPT_BACKUP_KEEP job gần nhất
+    try:
+        all_backups = sorted(CKPT_BACKUP_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in all_backups[CKPT_BACKUP_KEEP:]:
+            shutil.rmtree(old, ignore_errors=True)
+    except Exception:
+        pass
+    return saved
+
+def list_checkpoint_backups():
+    """Trả về danh sách các bản sao lưu, mới nhất trước, kèm thời điểm tạo."""
+    if not CKPT_BACKUP_DIR.exists():
+        return []
+    backups = []
+    for d in CKPT_BACKUP_DIR.iterdir():
+        if d.is_dir():
+            backups.append({"job_id": d.name, "mtime": d.stat().st_mtime,
+                             "files": [f.name for f in d.iterdir()]})
+    return sorted(backups, key=lambda b: b["mtime"], reverse=True)
+
+def restore_checkpoint_backup(job_id):
+    """Khôi phục lại đúng các file đã sao lưu của 1 job — dùng khi model mới huấn luyện tệ hơn."""
+    import shutil
+    src = CKPT_BACKUP_DIR / job_id
+    if not src.exists():
+        raise FileNotFoundError(f"Không tìm thấy bản sao lưu cho job {job_id}")
+    restored = []
+    for item in src.iterdir():
+        if item.is_dir():
+            dst = ROOT / "checkpoints_multi" / item.name
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+            restored.append(item.name)
+        else:
+            dst = ROOT / "checkpoints_multi" / item.name
+            shutil.copy2(item, dst)
+            restored.append(item.name)
+    return restored
+
+VAL_LOSS_RE = re.compile(r"(?:Best Val Loss:|best_val=)\s*([\d.]+)")
+HZ_START_RE = re.compile(r"ĐANG HUẤN LUYỆN MỐC:\s*(\d+)\s*NGÀY")
+
+def _process_log_line(line, hz_status, current_hz, hz_completed, total_hz):
+    """
+    Phân tích một dòng log để cập nhật trạng thái các mốc horizon và tiến độ.
+    Trả về (new_current_hz, new_hz_completed, changed_flag, notify_msg)
+    """
+    hz_match = HZ_START_RE.search(line)
+    loss_match = VAL_LOSS_RE.search(line)
+    changed = False
+    notify_msg = None
+
+    if hz_match:
+        h_started = int(hz_match.group(1))
+        if h_started in hz_status:
+            current_hz = h_started
+            if hz_status[h_started]["state"] != "running" and hz_status[h_started]["state"] != "done":
+                hz_status[h_started]["state"] = "running"
+                changed = True
+        notify_msg = f"📌 {line.strip()}"
+    elif loss_match and current_hz is not None and current_hz in hz_status:
+        val = float(loss_match.group(1))
+        if hz_status[current_hz]["state"] != "done":
+            hz_status[current_hz]["state"] = "done"
+            hz_status[current_hz]["val_loss"] = val
+            hz_completed = min(hz_completed + 1, total_hz)
+            changed = True
+        elif hz_status[current_hz]["val_loss"] is None:
+            hz_status[current_hz]["val_loss"] = val
+            changed = True
+
+    return current_hz, hz_completed, changed, notify_msg
+
 
 def get_dir_fingerprint():
     data_dir = ROOT / "datasets"
@@ -1563,7 +1757,12 @@ def get_sorted_files(fp):
     info = []
     for f in files:
         df = load_df(f)
-        if not df.empty: info.append({"path": str(f), "max_date": df[DATE_COL].max(), "name": f.name, "rows": len(df)})
+        # Lỗi thật đã bắt được: 1 file lỡ lọt vào datasets/ (thiếu cột Ngày hợp lệ) làm SẬP TOÀN
+        # BỘ APP mỗi lần tải trang (KeyError 'Ngày' ở đây), vì trước chỉ kiểm tra .empty chứ
+        # không kiểm tra cột Ngày có tồn tại không. Giờ bỏ qua an toàn file nào thiếu cột Ngày,
+        # không để 1 file rác làm treo cả ứng dụng cho mọi người dùng.
+        if not df.empty and DATE_COL in df.columns:
+            info.append({"path": str(f), "max_date": df[DATE_COL].max(), "name": f.name, "rows": len(df)})
     info.sort(key=lambda x: x["max_date"])
     return info
 
@@ -1582,12 +1781,14 @@ CUTOFF_DATE = _latest_known_date - pd.Timedelta(days=365)
 cache_mismatch = False
 if CACHE_FILE.exists():
     try:
-        cache = pd.read_pickle(CACHE_FILE)
-        combined = cache.get("df")
-        if cache.get("fp") != fingerprint:
+        cached_fp, combined = read_cache(CACHE_FILE)
+        if cached_fp != fingerprint:
             cache_mismatch = True
-    except: combined = None
-else: combined = None
+    except Exception as e:
+        st.warning(f"Không đọc được kết quả đối chiếu đã lưu: {e}")
+        combined = None
+else:
+    combined = None
 
 if combined is None:
     combined = pd.DataFrame()
@@ -1611,9 +1812,16 @@ NAV_OPTIONS = [
     "◈  Dự báo",
     "▦  Đánh giá mô hình",
     "◷  Lịch sử & Xuất dữ liệu",
-    "⚙  Huấn luyện mô hình",
+    "📈  Biểu đồ",
     "❓  Hướng dẫn sử dụng"
 ]
+# Không được gán st.session_state["main_nav_radio"] SAU KHI widget cùng key này đã được tạo ở
+# một lượt chạy trước (Streamlit ném StreamlitAPIException) — các nút "chuyển trang" trong app chỉ
+# đặt cờ tạm _pending_nav rồi st.rerun(); ở đầu lượt chạy MỚI này (trước khi radio được tạo bên
+# dưới), lấy cờ đó ra để cập nhật main_nav_radio thì mới hợp lệ.
+if "_pending_nav" in st.session_state:
+    st.session_state["main_nav_radio"] = st.session_state.pop("_pending_nav")
+
 nav_choice = st.sidebar.radio(
     "Điều hướng",
     NAV_OPTIONS,
@@ -1630,8 +1838,8 @@ st.sidebar.caption("MÔ HÌNH DỰ BÁO")
 st.sidebar.markdown("""
 <div style="padding:10px 12px; border-radius:8px; background:#eaf5f4; border:1px solid #bcebdc; font-size:12.5px;">
     <div style="color:#116d5c; font-size:11px; margin-bottom:2px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">ĐỘNG CƠ AI CHUẨN HÓA:</div>
-    <b style="color:#075f57; font-size:13.5px;">🧠 GUMNet Enterprise</b>
-    <div style="color:#116d5c; font-size:11px; margin-top:3px;">✓ Sẵn sàng 7/7 mốc thời gian (Độ chính xác cao)</div>
+    <b style="color:#075f57; font-size:13.5px;">🧠 GUMNet Production</b>
+    <div style="color:#116d5c; font-size:11px; margin-top:3px;">Đã nạp checkpoint cho 7/7 mốc thời gian</div>
 </div>
 """, unsafe_allow_html=True)
 sel_models = ["GUMNet"]
@@ -1645,7 +1853,7 @@ if is_gpu:
     <div style="padding:11px 13px; border-radius:9px; background:#eafaf5; border:1px solid #bcebdc; color:#116d5c; font-size:12px;">
         <span class="pulsing-dot"></span>
         <b>Server: GPU NVIDIA CUDA</b><br>
-        <small style="margin-left:14px; color:#116d5c;">Tăng tốc tối đa · Sẵn sàng</small>
+        <small style="margin-left:14px; color:#116d5c;">Có hỗ trợ tăng tốc phần cứng</small>
     </div>
     """, unsafe_allow_html=True)
 else:
@@ -1653,22 +1861,113 @@ else:
     <div style="padding:11px 13px; border-radius:9px; background:#fff7e7; border:1px solid #f6d58c; color:#794800; font-size:12px;">
         <span class="pulsing-dot-cpu"></span>
         <b>Server: CPU Doanh Nghiệp</b><br>
-        <small style="margin-left:14px; color:#794800;">6 vCPUs · Dự báo tức thì (< 1s)</small>
+        <small style="margin-left:14px; color:#794800;">6 vCPUs · Thời gian dự báo tham khảo &lt; 1 giây</small>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ==========================================
-# 2. TỰ ĐỘNG ĐỒNG BỘ DỮ LIỆU ĐÁNH GIÁ (BACKTESTING)
+# 2. ĐỒNG BỘ DỮ LIỆU ĐÁNH GIÁ (BACKTESTING) — JOB NỀN ĐỘC LẬP, KHÔNG PHỤ THUỘC SESSION
 # ==========================================
-if cache_mismatch or (combined.empty and file_paths):
-    with st.spinner("⏳ Đang tự động phân tích & đối chiếu sai số cho dữ liệu thị trường mới..."):
+# Trước đây (2 lần sửa liên tiếp): chạy đồng bộ NGAY TRONG script Streamlit, chặn cả trang bằng
+# st.spinner() — vừa chặn người dùng chờ, vừa gắn với session hiện tại (đổi trang/đóng tab giữa
+# chừng thì mất luôn tiến độ, F5 lại là tính lại từ đầu). Giờ chuyển hẳn sang TIẾN TRÌNH NỀN ĐỘC
+# LẬP (run_backtest_job.py, xem file đó) — không phải Thread trong session, mà 1 process hệ điều
+# hành thật, chạy tới khi xong bất kể Streamlit đang làm gì, đổi trang/rerun không ảnh hưởng.
+# Trạng thái đọc từ 2 file trên đĩa (.backtest.lock, .backtest_job.json) — không dùng
+# session_state làm nguồn thật (session_state chỉ là bộ nhớ tạm của riêng 1 tab/session).
+BACKTEST_LOCK_FILE = ROOT / ".backtest.lock"
+BACKTEST_STATUS_FILE = ROOT / ".backtest_job.json"
+
+def _replace_with_retry(tmp, dest, attempts=6, delay=0.05):
+    """os.replace() trên Windows có thể ném PermissionError [WinError 32] nếu file đích đang bị
+    tiến trình khác mở đúng lúc đó (VD: nhiều lượt rerun của Streamlit cùng ghi status gần như
+    đồng thời). Đây chỉ là tranh chấp thoáng qua, không phải lỗi thật — thử lại vài lần cách nhau
+    vài chục mili-giây gần như luôn tự qua được, không cần người dùng thấy lỗi đỏ."""
+    for i in range(attempts):
         try:
-            combined = run_upload_simulation(str(BUILTIN_CSV), file_paths, CUTOFF_DATE)
-            pd.to_pickle({"fp": fingerprint, "df": combined}, CACHE_FILE)
-            cache_mismatch = False
-        except Exception:
-            pass
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay)
+
+def get_backtest_status():
+    if not BACKTEST_STATUS_FILE.exists():
+        return None
+    try:
+        return json.loads(BACKTEST_STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _backtest_job_alive(status):
+    """status pending/running CHƯA CHẮC job còn thật sự sống (có thể bị kill/crash không kịp ghi
+    'failed') — đối chiếu thêm với .backtest.lock (có PID) để chắc chắn, giống hệt cách app đã
+    làm với khóa huấn luyện."""
+    if not status or status.get("status") not in ("pending", "running"):
+        return False
+    if not BACKTEST_LOCK_FILE.exists():
+        return False
+    try:
+        lock_info = json.loads(BACKTEST_LOCK_FILE.read_text(encoding="utf-8"))
+        return lock_info.get("job_id") == status.get("job_id") and _pid_alive(lock_info.get("pid"))
+    except Exception:
+        return False
+
+def spawn_backtest_job(fp, models, files, cutoff_date):
+    job_id = uuid.uuid4().hex[:12]
+    tmp = BACKTEST_STATUS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({
+        "job_id": job_id, "fingerprint": fp, "status": "pending",
+        "started_at": None, "finished_at": None, "error": None,
+    }, ensure_ascii=False), encoding="utf-8")
+    _replace_with_retry(tmp, BACKTEST_STATUS_FILE)  # ghi "pending" TRƯỚC khi Popen, để lượt render kế
+    # tiếp (dù rất sát ngay sau) đã thấy có job đang chờ, tránh 2 lượt rerun gần nhau cùng spawn.
+    cmd = [
+        sys.executable, str(ROOT / "run_backtest_job.py"),
+        "--job-id", job_id, "--fingerprint", fp,
+        "--cutoff-date", cutoff_date.strftime("%Y-%m-%d"),
+        "--models"] + models + ["--files"] + [str(p) for p in files]
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+    return job_id
+
+def ensure_backtest_job_running(fp, models, files, cutoff_date, force=False):
+    """Gọi ở MỌI trang, MỌI lượt rerun (không riêng gì trang Đánh giá) — tự đảm bảo luôn có
+    đúng 1 job đối chiếu chạy nền cho đúng dữ liệu MỚI NHẤT, không cần người dùng bấm gì.
+    """
+    if not files:
+        return
+    # Lỗi kiến trúc đã phát hiện: hệ thống đối chiếu cũ này (spawn_backtest_job) và pipeline tự
+    # động huấn luyện mới (pipeline_engine) cùng ghi vào chung 1 file simulation_cache.json và
+    # cùng chạy model trên chung 1 GPU — nếu cả 2 cùng chạy một lúc sẽ tranh nhau và có thể ghi
+    # đè kết quả của nhau. Trong lúc pipeline mới đang chạy thật, hệ thống cũ tạm nhường, không
+    # tự tạo job riêng — tránh chạy chồng chéo lãng phí và tranh chấp file/GPU.
+    if pipeline_engine.get_pipeline_status().get("is_running"):
+        return
+    status = get_backtest_status()
+    alive = _backtest_job_alive(status)
+    if not force:
+        if status and status.get("fingerprint") == fp and alive:
+            return  # đúng job cho đúng dữ liệu này đang chạy rồi -> không tạo trùng
+        if status and status.get("fingerprint") == fp and status.get("status") == "success":
+            return  # đã có kết quả đúng dữ liệu này rồi -> khỏi chạy lại
+    if alive and status.get("fingerprint") != fp:
+        # Có job KHÁC (dữ liệu cũ hơn) đang chạy dở — để nó chạy nốt, KHÔNG chen ngang (chỉ 1
+        # job/thời điểm). Khi nó xong, lượt rerun kế tiếp (của bất kỳ ai, bất kỳ trang nào) sẽ
+        # tự thấy fingerprint hiện tại vẫn khác "success" và tự tạo job mới cho dữ liệu mới nhất
+        # — đây chính là cơ chế "chạy nối tiếp theo dữ liệu mới nhất" mà không cần vòng lặp riêng.
+        return
+    spawn_backtest_job(fp, models, files, cutoff_date)
+
+ensure_backtest_job_running(fingerprint, sel_models, file_paths, CUTOFF_DATE)
+_bt_status = get_backtest_status()
+_backtest_running_now = _bt_status is not None and _bt_status.get("fingerprint") == fingerprint and _backtest_job_alive(_bt_status)
+_backtest_failed_current = _bt_status is not None and _bt_status.get("fingerprint") == fingerprint and _bt_status.get("status") == "failed"
+_backtest_stale = (cache_mismatch or (combined.empty and file_paths)) and not _backtest_running_now
 
 if not combined.empty:
     if "Mặt hàng" in combined.columns:
@@ -1682,6 +1981,95 @@ else:
 # 3. NỘI DUNG TỪNG TRANG (THEO MẪU ENTERPRISE MOCKUP)
 # ==========================================
 
+def render_global_pipeline_banner():
+    status_data = pipeline_engine.get_pipeline_status()
+    st_val = status_data.get("status")
+    is_running = status_data.get("is_running", False)
+
+    if st_val == "idle" and not is_running:
+        return
+
+    steps = status_data.get("steps", [])
+    step_title = status_data.get("step_title", "Cập nhật dữ liệu")
+    details = status_data.get("details", "")
+    updated_at = status_data.get("updated_at", "")
+
+    step_html_items = []
+    for s in steps:
+        state = s.get("state", "waiting")
+        title = s.get("title", "")
+        if state == "done":
+            step_html_items.append(
+                f'<span style="color:#087762; font-weight:700; font-size:12.5px; display:inline-flex; align-items:center; gap:4px;">'
+                f'<span style="color:#00ad91;">✓</span> {title}</span>'
+            )
+        elif state == "running":
+            step_html_items.append(
+                f'<span style="color:#075f57; font-weight:800; font-size:12.5px; display:inline-flex; align-items:center; gap:4px; background:#dff5f1; padding:2px 8px; border-radius:6px;">'
+                f'<span style="color:#00ad91; animation:pulseDot 1.5s infinite;">●</span> {title}</span>'
+            )
+        elif state == "failed":
+            step_html_items.append(
+                f'<span style="color:#dc2626; font-weight:700; font-size:12.5px; display:inline-flex; align-items:center; gap:4px;">'
+                f'✕ {title}</span>'
+            )
+        else:
+            step_html_items.append(
+                f'<span style="color:#94a3b8; font-weight:500; font-size:12.5px; display:inline-flex; align-items:center; gap:4px;">'
+                f'○ {title}</span>'
+            )
+
+    steps_row = " &nbsp; <span style='color:#cbd5e1;'>➔</span> &nbsp; ".join(step_html_items)
+
+    banner_bg = "#f0fdf4" if st_val == "complete" else ("#fff1f2" if st_val == "failed" else "#f0fdfa")
+    banner_border = "#bbf7d0" if st_val == "complete" else ("#fecdd3" if st_val == "failed" else "#99f6e4")
+    border_left_color = "#16a34a" if st_val == "complete" else ("#e11d48" if st_val == "failed" else "#0d9488")
+
+    st.markdown(f"""
+    <div style="background:{banner_bg}; border:1px solid {banner_border}; border-left:5px solid {border_left_color}; border-radius:10px; padding:12px 18px; margin-bottom:20px; box-shadow:0 2px 6px rgba(0,0,0,0.03);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+            <div style="font-size:13px; font-weight:800; color:#0f172a; text-transform:uppercase; letter-spacing:0.04em;">
+                TIẾN TRÌNH HỆ THỐNG: <span style="color:{border_left_color};">{step_title}</span>
+            </div>
+            <div style="font-size:11.5px; color:#64748b;">Cập nhật lúc: <b>{updated_at}</b></div>
+        </div>
+        <div style="padding:4px 0; display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
+            {steps_row}
+        </div>
+        <div style="margin-top:8px; font-size:12.5px; color:#334155; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <span>{details}</span>
+            <span style="color:#087762; font-weight:600; font-size:12px; background:rgba(0,173,145,0.08); padding:3px 8px; border-radius:6px;">💡 Trang sẽ tự mở lại khi xử lý xong, không cần bấm gì thêm.</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    return is_running
+
+# Theo yêu cầu: khi pipeline đang xử lý thật (is_running), khóa toàn trang — không hiện nội
+# dung/menu bên dưới, không cho thao tác đi chỗ khác — chỉ hiện đúng 1 màn hình tiến trình ở
+# giữa, tự làm mới tới khi xong. (Trước đây từng để lộ nội dung phía dưới trong lúc xử lý, sau
+# đó lại từng để y hệt hiện trắng trang do gọi rerun() quá sớm — giờ chủ động khóa có chủ đích,
+# kèm nội dung rõ ràng, không phải màn hình trắng do lỗi.)
+_pipeline_is_running = render_global_pipeline_banner()
+
+if _pipeline_is_running:
+    st.markdown("""
+    <div style="max-width:560px; margin:60px auto; text-align:center; padding:36px 28px;
+                background:#ffffff; border:1px solid #e2e8f0; border-radius:16px;
+                box-shadow:0 4px 18px rgba(15,23,42,0.06);">
+        <div class="pulsing-dot" style="width:14px; height:14px; margin:0 auto 18px;"></div>
+        <div style="font-size:17px; font-weight:800; color:#0f172a; margin-bottom:8px;">
+            Hệ thống đang xử lý dữ liệu mới
+        </div>
+        <div style="font-size:13.5px; color:#64748b; line-height:1.6;">
+            Vui lòng đợi trong giây lát — trang sẽ tự động mở lại ngay khi xử lý xong,
+            không cần tải lại hay bấm gì thêm.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    time.sleep(2)
+    st.rerun()
+
 # ──────────────────────────────────────────
 # TRANG 1: DỰ BÁO
 # ──────────────────────────────────────────
@@ -1690,45 +2078,136 @@ if nav_choice == "◈  Dự báo":
     <div style="margin-bottom: 22px;">
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRUNG TÂM DỰ BÁO GIÁ DẦU</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Dự Báo Thị Trường</h1>
-        <p style="margin:0; color:#64748b; font-size:14px;">Tạo dự báo giá đa mốc thời gian từ dữ liệu thị trường mới nhất.</p>
+        <p style="margin:0; color:#64748b; font-size:14px;">Tạo dự báo giá đa mốc thời gian từ dữ liệu thị trường mới nhất bằng GUMNet Production.</p>
     </div>
     """, unsafe_allow_html=True)
 
     col_input, col_status = st.columns([1.25, 0.75])
     
     with col_input:
-        card_input = st.container(border=True)  # st.container(border=True): khung card THẬT của
-        # Streamlit, bọc đúng các widget bên trong (kể cả st.file_uploader) — an toàn hơn nhiều so
-        # với việc tự mở/đóng thẻ <div> bằng st.markdown rồi hy vọng nó bao đúng các widget khác,
-        # vì mỗi lệnh st.markdown/st.file_uploader render vào 1 container DOM riêng của Streamlit,
-        # <div> mở ở lệnh này KHÔNG thực sự bao được widget ở lệnh khác (dễ vỡ layout không báo lỗi).
+        card_input = st.container(border=True)
     with card_input:
         st.markdown("#### Cập nhật dữ liệu thị trường")
-        st.caption("Tải tệp Excel (.xlsx, .xls) hoặc CSV chứa cột Ngày và giá thị trường:")
-        up = st.file_uploader("Upload file", type=["xlsx", "xls", "csv"], key="uploader_main", label_visibility="collapsed")
+        st.caption("Tải tệp Excel (.xlsx, .xls) hoặc CSV chứa cột Ngày và giá thị trường. Hỗ trợ chọn nhiều file cùng lúc:")
+        ups = st.file_uploader(
+            "Upload file", type=["xlsx", "xls", "csv"], key="uploader_main",
+            label_visibility="collapsed", accept_multiple_files=True,
+        )
+        # Gợi ý "vẫn thêm được file khác" giờ chỉ còn icon dấu "+" cạnh file (CSS, xem
+        # stFileChips::after) — bỏ dòng chữ theo yêu cầu, icon đã đủ rõ.
         active_file_paths = list(file_paths)
-        if up:
-            tmp = ROOT / "datasets" / up.name
-            with open(tmp, "wb") as f: f.write(up.getbuffer())
-            df_new = load_df(tmp)
-            if not df_new.empty:
-                m_date = df_new[DATE_COL].max()
-                st.success(f"✅ Đã tiếp nhận tệp tin: **{up.name}** (Dữ liệu đến ngày: **{m_date.strftime('%d/%m/%Y')}**)")
-                if tmp not in active_file_paths:
-                    active_file_paths.append(tmp)
 
-                # Việc A: gợi ý thông minh khi phát hiện dữ liệu MỚI hơn ngày hệ thống đang có
-                # (_latest_known_date đã tính ở trên, TRƯỚC khi file này được ghi vào datasets/).
-                if pd.notna(m_date) and m_date > _latest_known_date:
-                    st.info(
-                        f"🆕 **Phát hiện dữ liệu mới đến ngày {m_date.strftime('%d/%m/%Y')}** "
-                        f"(hệ thống trước đó chỉ có đến {_latest_known_date.strftime('%d/%m/%Y')}). "
-                        "Bạn có thể xem thử dự báo ngay bên dưới, hoặc huấn luyện lại (Finetune) "
-                        "để mô hình cập nhật theo dữ liệu mới nhất — không bắt buộc."
-                    )
-                    if st.button("⚡ Chuyển sang Huấn luyện để Finetune ngay", key="btn_goto_train_from_upload"):
-                        st.session_state["main_nav_radio"] = "⚙  Huấn luyện mô hình"
-                        st.rerun()
+        if ups:
+            st.caption(f"📋 **Kiểm tra xem trước {len(ups)} file đã chọn (độc lập từng file):**")
+            previews = data_pipeline.preview_uploaded_files(
+                ups, _latest_known_date, existing_records=base_full_orig
+            )
+            all_valid_count = 0
+            confirmed_overwrite_files = set()
+
+            for idx, p in enumerate(previews):
+                fname = p["filename"]
+                if not p["is_valid"]:
+                    st.markdown(f"""
+                    <div style="background:#fff1f2; border:1px solid #fecdd3; border-radius:8px; padding:7px 12px; margin-bottom:6px; font-size:12.5px;">
+                        <b style="color:#e11d48;">✕ {fname}</b> — <span style="color:#475569;">{p.get('error')}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    all_valid_count += 1
+                    d_min_str = p['min_date'].strftime('%d/%m/%Y') if p.get('min_date') else ""
+                    d_max_str = p['max_date'].strftime('%d/%m/%Y') if p.get('max_date') else ""
+                    
+                    if p.get("has_new_data"):
+                        st.markdown(f"""
+                        <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:7px 12px; margin-bottom:6px; font-size:12.5px;">
+                            <b style="color:#16a34a;">✓ {fname}</b> — <span style="color:#1e293b;">{p['rows']:,} dòng ({d_min_str} → {d_max_str})</span> · 
+                            <b style="color:#059669;">Phát hiện {p.get('new_rows_count', 0)} ngày mới</b>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:7px 12px; margin-bottom:6px; font-size:12.5px;">
+                            <b style="color:#0284c7;">ℹ {fname}</b> — <span style="color:#64748b;">Hợp lệ ({p['rows']:,} dòng, đến {d_max_str}) · <b>Dữ liệu đã có sẵn trong hệ thống</b></span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    if p.get("modified_rows_count", 0) > 0:
+                        st.markdown(f"""
+                        <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:5px 12px; margin-bottom:6px; font-size:12px; color:#b45309;">
+                            ⚠️ Phát hiện {p['modified_rows_count']} ngày có giá điều chỉnh so với dữ liệu cũ.
+                        </div>
+                        """, unsafe_allow_html=True)
+                        with st.expander(f"Xem chi tiết & xác nhận ghi đè — {fname}"):
+                            details = p.get("modified_details", [])
+                            if details:
+                                detail_df = pd.DataFrame([{
+                                    "Ngày": d["date"].strftime("%d/%m/%Y") if hasattr(d["date"], "strftime") else str(d["date"]),
+                                    "Mặt hàng": d["column"],
+                                    "Giá cũ": d["old_value"],
+                                    "Giá mới": d["new_value"],
+                                } for d in details])
+                                st.dataframe(detail_df, use_container_width=True, hide_index=True)
+                            # Lỗi đã sửa: trước đây key chỉ dựa vào sha256 -> nếu 2 file trong
+                            # cùng lượt tải có NỘI DUNG GIỐNG HỆT NHAU (kể cả khác tên), key trùng
+                            # nhau -> StreamlitDuplicateElementKey crash cả trang. Thêm số thứ tự
+                            # (idx) của file trong danh sách để luôn duy nhất, đồng thời giữ sha256
+                            # kèm theo để file đứng nguyên vị trí vẫn giữ được trạng thái đã tick
+                            # qua các lượt rerun (không tự ý reset checkbox vô cớ).
+                            confirm_key = f"confirm_overwrite_{idx}_{p.get('sha256', fname)}"
+                            confirm = st.checkbox(
+                                f"Tôi xác nhận muốn ghi đè {p['modified_rows_count']} ngày ở trên bằng giá trị mới từ file này",
+                                key=confirm_key,
+                            )
+                            if confirm:
+                                # Lỗi đã sửa: trước đây ghi nhận theo TÊN FILE (fname) — nếu 2 file
+                                # trùng tên nhưng khác nội dung, tick xác nhận 1 file sẽ vô tình
+                                # làm cả file kia (chưa tick) cũng bị coi là "đã xác nhận". Dùng
+                                # sha256 (nội dung thật) thay vì tên file để phân biệt chính xác
+                                # từng file, kể cả khi trùng tên.
+                                confirmed_overwrite_files.add(p.get("sha256", fname))
+                                st.caption("✅ Các ngày trên sẽ được cập nhật khi bạn bấm nút xử lý bên dưới.")
+                            else:
+                                st.caption("Chưa xác nhận — các ngày này sẽ tiếp tục giữ nguyên giá trị cũ.")
+
+            files_to_process = [
+                p for p in previews
+                if p["is_valid"] and (p.get("has_new_data") or p.get("sha256", p["filename"]) in confirmed_overwrite_files)
+            ]
+
+            _col_l, _col_mid, _col_r = st.columns([1, 2, 1])
+            with _col_mid:
+                if len(files_to_process) > 0:
+                    btn_text = f"⚡ Kiểm tra & cập nhật {len(files_to_process)} file hợp lệ"
+                    pipeline_busy = bool(pipeline_engine.get_pipeline_status().get("is_running"))
+                    if pipeline_busy:
+                        st.caption("Hệ thống đang xử lý đợt trước. Nút sẽ tự mở lại khi hoàn tất.")
+                    if st.button(btn_text, key="btn_process_uploads", type="primary",
+                                 use_container_width=True, disabled=pipeline_busy):
+                        raw_map = {f.name: f for f in ups}
+                        res = data_pipeline.commit_valid_files(
+                            previews, raw_map, overwrite_confirmed_files=confirmed_overwrite_files
+                        )
+                        if res["success"]:
+                            file_names = [f["saved_as"] for f in res["saved_files"]]
+                            launch = pipeline_engine.launch_pipeline_background(
+                                res["batch_id"], res["total_new_rows"], file_names
+                            )
+                            msg = f"✅ Đã tiếp nhận và cập nhật {len(res['saved_files'])} file ({res['total_new_rows']} ngày mới"
+                            if res.get("total_overwritten_rows", 0) > 0:
+                                msg += f", {res['total_overwritten_rows']} ngày được ghi đè giá"
+                            msg += ")."
+                            if launch.get("started"):
+                                st.success(msg + " Hệ thống đang kích hoạt đối chiếu ngầm!")
+                            else:
+                                st.warning("Dữ liệu đã được lưu nhưng tiến trình nền chưa thể khởi động. Hãy đợi tác vụ hiện tại hoàn tất rồi thử cập nhật lại.")
+                            st.rerun()
+                        else:
+                            st.error("Không thể ghi nhận các file đã chọn. Vui lòng kiểm tra lại.")
+                elif all_valid_count > 0:
+                    st.button("ℹ️ Dữ liệu đã tồn tại (Không có ngày mới)", key="btn_no_new_data", disabled=True, use_container_width=True)
+                else:
+                    st.button("✕ Tất cả file không hợp lệ", key="btn_all_invalid", disabled=True, use_container_width=True)
 
         # Trước đây có ô multiselect cho người dùng bớt/thêm mốc trước khi tính — nhưng việc
         # tính đủ 7 mốc chỉ mất chưa tới 1 giây, và người dùng không thể "thêm/bớt" mốc thật sự
@@ -1764,14 +2243,14 @@ if nav_choice == "◈  Dự báo":
             st.markdown("""
             <div class="hub-notice gpu">
                 <b style="display:block; margin-bottom:2px;">🟢 Đang chạy bằng GPU CUDA</b>
-                Dự báo và huấn luyện được tăng tốc phần cứng. Hiệu năng đạt mức tối đa.
+                Dự báo và huấn luyện đang sử dụng tăng tốc phần cứng khi khả dụng.
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="hub-notice cpu">
                 <b style="display:block; margin-bottom:2px;">🔵 Đang chạy bằng CPU Doanh Nghiệp</b>
-                Dự báo nhanh (< 1s) hoạt động bình thường. Huấn luyện lại có thể thực hiện tại mục <b>Huấn luyện</b>.
+                Dự báo nhanh (&lt; 1s) hoạt động bình thường. Hệ thống tự đối chiếu và tối ưu khi cần.
             </div>
             """, unsafe_allow_html=True)
 
@@ -1827,7 +2306,7 @@ if nav_choice == "◈  Dự báo":
     if ckpts_exist:
         show_live_forecasts(base_full_orig, active_file_paths, sel_models, sel_hz_view)
     else:
-        st.info("ℹ️ **Chưa có mô hình nào được nạp.** Hãy vào mục 'Huấn luyện mô hình' để khởi tạo trọng số.")
+        st.info("ℹ️ **GUMNet chưa sẵn sàng.** Vui lòng liên hệ người vận hành hệ thống để kiểm tra model.")
 
 
 # ──────────────────────────────────────────
@@ -1842,6 +2321,24 @@ elif nav_choice == "▦  Đánh giá mô hình":
     </div>
     """, unsafe_allow_html=True)
 
+    # Bỏ nút "Cập nhật (dự phòng)/Thử lại" theo yêu cầu — hệ thống giờ chạy tự động hoàn toàn,
+    # không cần nút tay dự phòng nữa. Chỉ còn hiện đúng trạng thái để người dùng biết đang ở đâu.
+    if _backtest_running_now:
+        st.info("⏳ **Đang tự động cập nhật kết quả đối chiếu...** Trang sẽ tự hiện kết quả mới khi xong, không cần bấm gì — có thể chuyển sang trang khác trong lúc chờ.")
+        # Streamlit không tự vẽ lại trang khi 1 tiến trình NỀN (ngoài session) ghi xong file —
+        # phải tự làm mới định kỳ trong lúc đang chạy để "tự hiện kết quả" đúng nghĩa, không
+        # bắt người dùng phải tự bấm gì mới thấy cập nhật.
+        time.sleep(2)
+        st.rerun()
+    elif _backtest_failed_current:
+        st.error("❌ Lần cập nhật gần nhất bị lỗi. Kết quả đang hiển thị (nếu có) là kết quả cũ.")
+        with st.expander("🔍 Chi tiết kỹ thuật", expanded=False):
+            st.code(str(_bt_status.get("error")), language="text")
+    elif _backtest_stale:
+        st.warning("⚠️ Có dữ liệu mới chưa được tính vào kết quả đối chiếu bên dưới — hệ thống sẽ tự cập nhật trong giây lát.")
+    elif df_view.empty:
+        st.info("ℹ️ Chưa có kết quả đối chiếu nào — hệ thống sẽ tự tính khi có dữ liệu.")
+
     if not df_view.empty:
         avg_mape = df_view["% Lệch"].mean()
         avg_mae = df_view["Sai lệch"].mean()
@@ -1850,20 +2347,27 @@ elif nav_choice == "▦  Đánh giá mô hình":
         
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
-            status_mape = "Trong ngưỡng an toàn (< 7%)" if avg_mape < 7.0 else ("Chấp nhận được (7-10%)" if avg_mape <= 10.0 else "Khuyến nghị Finetune (> 10%)")
-            color_mape = "#087762" if avg_mape < 7.0 else ("#c77700" if avg_mape <= 10.0 else "#dc2626")
+            if avg_mape < 7.0:
+                status_mape = "MAPE dưới ngưỡng 7%"
+                color_mape = "#087762"
+            elif avg_mape <= 10.0:
+                status_mape = "Cần tiếp tục theo dõi (7-10%)"
+                color_mape = "#c77700"
+            else:
+                status_mape = "Hệ thống đang tự tối ưu mô hình (> 10%)"
+                color_mape = "#dc2626"
             st.markdown(f"""
             <div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; background:#fff;">
-                <span style="color:#64748b; font-size:12px; font-weight:600;">MAPE TRUNG BÌNH</span>
+                <span style="color:#64748b; font-size:12px; font-weight:600;">MAPE TỔNG THỂ</span>
                 <div style="font-size:28px; font-weight:800; margin:4px 0; color:#1e293b;">{avg_mape:.2f}<small style="font-size:14px; font-weight:500; color:#64748b;">%</small></div>
-                <span style="color:{color_mape}; font-size:12px; font-weight:600;">● {status_mape}</span>
+                <span style="color:{color_mape}; font-size:12px; font-weight:700;">● {status_mape}</span>
             </div>
             """, unsafe_allow_html=True)
             
         with col_m2:
             st.markdown(f"""
             <div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; background:#fff;">
-                <span style="color:#64748b; font-size:12px; font-weight:600;">MAE TRUNG BÌNH</span>
+                <span style="color:#64748b; font-size:12px; font-weight:600;">MAE TỔNG THỂ</span>
                 <div style="font-size:28px; font-weight:800; margin:4px 0; color:#1e293b;">{avg_mae:,.2f} <small style="font-size:14px; font-weight:500; color:#64748b;">USD</small></div>
                 <span style="color:#087762; font-size:12px; font-weight:600;">● Sai lệch giá tuyệt đối</span>
             </div>
@@ -1882,11 +2386,11 @@ elif nav_choice == "▦  Đánh giá mô hình":
         <div style="background:#f8fafc; border-left:4px solid #00ad91; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
             <b>💡 Cẩm nang đọc chỉ số & hành động:</b><br>
             • <b>MAPE (%)</b>: Phần trăm sai lệch trung bình giữa giá AI đoán so với giá thị trường thực tế. 
-              <span style="color:#087762; font-weight:700;">Xanh (&lt; 7%)</span>: Rất tốt, yên tâm dùng số liệu ➔ 
-              <span style="color:#9b6100; font-weight:700;">Vàng (7–10%)</span>: Chấp nhận được ➔ 
-              <span style="color:#dc2626; font-weight:700;">Đỏ (&gt; 10%)</span>: Biến động mạnh, khuyến nghị sang mục <i>Huấn luyện</i> để Finetune.<br>
+              <span style="color:#087762; font-weight:700;">Xanh (&lt; 7%)</span>: Sai số đang dưới ngưỡng tham khảo ➔ 
+              <span style="color:#9b6100; font-weight:700;">Vàng (7–10%)</span>: Cần tiếp tục theo dõi ➔ 
+              <span style="color:#dc2626; font-weight:700;">Đỏ (&gt; 10%)</span>: Sai số vượt ngưỡng — Hệ thống tự động tối ưu GUMNet Candidate ngầm.<br>
             • <b>MAE (USD)</b>: Sai số tuyệt đối tính bằng số tiền thực tế (USD/thùng).<br>
-            • <b>Bảng nhiệt (Heatmap)</b>: Màu xanh đậm biểu thị vùng dự báo bám sát nhất. Càng về mốc xa (+60d), biến động thị trường lớn nên sai số tăng tự nhiên.
+            • <b>Bảng nhiệt (Heatmap)</b>: Màu sắc thể hiện mức sai số tương đối giữa các mốc. Các mốc xa có thể có sai số khác mốc gần tùy giai đoạn dữ liệu.
         </div>
         """, unsafe_allow_html=True)
         
@@ -1945,12 +2449,73 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
         <b>💡 Hướng dẫn tra cứu & phục vụ kiểm toán:</b><br>
         • <b>Danh mục đợt nạp:</b> Quản lý lịch sử toàn bộ các tệp Excel/CSV đã nạp vào hệ thống theo thứ tự thời gian.<br>
         • <b>Bảng đối chiếu:</b> Cột <i>Dự báo</i> là giá AI đưa ra tại thời điểm đó trong quá khứ; cột <i>Thực tế</i> là giá thị trường diễn ra sau đó. Bấm <b>'📥 Xuất Bảng Đợt Này'</b> để tải file CSV nộp cấp quản lý.<br>
-        • <b>Đồ thị đối chiếu:</b> Đường <b>nét liền xanh ngọc</b> là giá Thực tế, đường <b>nét đứt tím</b> là giá Dự báo. Hai đường càng bám sát nhau chứng tỏ mô hình dự đoán càng chính xác.
+        • <b>Xem biểu đồ đối chiếu gộp toàn bộ lịch sử:</b> chuyển sang tab <b>"📈 Biểu đồ"</b> ở menu bên trái.
     </div>
     """, unsafe_allow_html=True)
 
-    if file_info:
-        st.markdown("#### 📂 Danh mục các đợt nạp dữ liệu thị trường")
+    if _backtest_running_now or _backtest_failed_current or _backtest_stale:
+        _col_upd_l2, _col_upd_r2 = st.columns([3, 1])
+        with _col_upd_l2:
+            if _backtest_running_now:
+                st.info("⏳ Đang tự động cập nhật bảng đối chiếu... sẽ tự hiện khi xong, không cần bấm gì.")
+                time.sleep(2)
+                st.rerun()
+            elif _backtest_failed_current:
+                st.error("❌ Lần cập nhật gần nhất bị lỗi. Bảng đang hiển thị (nếu có) là kết quả cũ.")
+            else:
+                st.warning("⚠️ Có dữ liệu mới chưa được tính vào bảng đối chiếu bên dưới — hệ thống sẽ tự cập nhật trong giây lát.")
+        with _col_upd_r2:
+            _btn_label2 = "🔁 Thử lại" if _backtest_failed_current else "🔄 Cập nhật (dự phòng)"
+            if st.button(_btn_label2, key="btn_update_backtest_p3", use_container_width=True,
+                         disabled=_backtest_running_now):
+                ensure_backtest_job_running(fingerprint, sel_models, file_paths, CUTOFF_DATE, force=True)
+                st.rerun()
+
+    st.markdown("#### 📂 Nhật ký các đợt nạp dữ liệu & trạng thái tự động hóa")
+    ingest_hist = data_pipeline.get_ingestion_history()
+    pipe_status = pipeline_engine.get_pipeline_status()
+    
+    if ingest_hist:
+        hist_table = []
+        for h in ingest_hist:
+            saved_names = ", ".join([f["filename"] for f in h.get("saved_files", [])]) or "Không có file mới"
+            retrain_status = "Đang xử lý ngầm"
+            if (pipe_status.get("batch_info") or {}).get("batch_id") == h.get("batch_id"):
+                if pipe_status.get("status") == "complete":
+                    dec = pipe_status.get("retrain_decision", {})
+                    cand = pipe_status.get("candidate_result", {})
+                    if cand and cand.get("promoted"):
+                        retrain_status = "✓ Đã áp dụng GUMNet candidate mới"
+                    elif dec and dec.get("needed"):
+                        retrain_status = "Giữ nguyên GUMNet hiện tại"
+                    else:
+                        retrain_status = "Không cần tối ưu (MAPE tốt)"
+                elif pipe_status.get("status") == "failed":
+                    retrain_status = "Có lỗi (Giữ GUMNet hiện tại)"
+            else:
+                retrain_status = "Hoàn tất kiểm định"
+
+            hist_table.append({
+                "Mã đợt": h.get("batch_id", "")[:18],
+                "Thời gian nạp": h.get("created_at", ""),
+                "Tệp đã lưu": saved_names,
+                "Số ngày mới": f"{h.get('total_new_rows', 0)} ngày",
+                "Kiểm định file": f"✓ {h.get('saved_count', 0)} hợp lệ / {h.get('total_files', 0)} file",
+                "Tối ưu GUMNet": retrain_status,
+                "Trạng thái": "Đã lưu" if h.get("saved_count", 0) > 0 else "Từ chối"
+            })
+        df_hist = pd.DataFrame(hist_table)
+        safe_dataframe(df_hist)
+        
+        csv_hist = df_hist.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 Xuất Báo Cáo Lịch Sử Nạp Dữ Liệu (CSV)",
+            data=csv_hist,
+            file_name="Lich_su_cap_nhat_du_lieu.csv",
+            mime="text/csv",
+            key="btn_dl_hist_full"
+        )
+    elif file_info:
         history_rows = []
         for idx, fi in enumerate(file_info):
             history_rows.append({
@@ -1958,7 +2523,7 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
                 "Tên tệp tin": fi["name"],
                 "Ngày dữ liệu cuối": fi["max_date"].strftime("%d/%m/%Y"),
                 "Số dòng dữ liệu": f"{fi['rows']:,} dòng",
-                "Trạng thái": "Đã đánh giá"
+                "Trạng thái": "Đã kiểm định"
             })
         safe_dataframe(pd.DataFrame(history_rows).set_index("Đợt"))
 
@@ -1984,479 +2549,46 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
                 key="btn_dl_sub_up"
             )
             
-        safe_dataframe(sub_up[cols_show].style.format({"Dự báo":"{:.2f}","Thực tế":"{:.2f}","Sai lệch":"{:.2f}","% Lệch":"{:.2f}%"}), height=300)
-        
-        st.markdown("#### 📈 Biểu đồ so sánh Thực tế và Dự báo")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            sh_chart = st.selectbox("Chọn chân trời dự báo:", [f"{h}d" for h in HORIZONS], key="sh_chart_page3")
-        with col_c2:
-            tgt_chart = st.selectbox("Chọn mặt hàng dầu:", TARGET_COLS, key="tgt_chart_page3")
-            
-        sub_c = sub_up[(sub_up["Horizon"] == sh_chart) & (sub_up["Target"] == tgt_chart)]
-        if not sub_c.empty:
-            fig_cmp = go.Figure()
-            for m in sel_models:
-                ms = sub_c[sub_c["Model"] == m].sort_values(DATE_COL)
-                if not ms.empty:
-                    fig_cmp.add_trace(go.Scatter(x=ms[DATE_COL], y=ms["Dự báo"], name=f"Dự báo ({m})", mode="lines+markers", line=dict(dash="dash", color="#7c3aed")))
-            act = sub_c.drop_duplicates(DATE_COL).sort_values(DATE_COL)
-            fig_cmp.add_trace(go.Scatter(x=act[DATE_COL], y=act["Thực tế"], name="Thực tế", mode="lines+markers", line=dict(color="#00d4aa", width=3)))
-            fig_cmp.update_layout(title=f"Đối chiếu {tgt_chart} ({sh_chart}) - Đợt {sel_up}", template="plotly_dark", height=320, hovermode="x unified")
-            safe_plotly_chart(fig_cmp)
+        calc_height = min(max(len(sub_up) * 38 + 50, 350), 650)
+        safe_dataframe(sub_up[cols_show].style.format({"Dự báo":"{:.2f}","Thực tế":"{:.2f}","Sai lệch":"{:.2f}","% Lệch":"{:.2f}%"}), height=calc_height)
     else:
         st.info("Chưa có dữ liệu lịch sử đối chiếu.")
 
 
 # ──────────────────────────────────────────
-# TRANG 4: HUẤN LUYỆN MÔ HÌNH
+# TRANG 4: BIỂU ĐỒ (gộp toàn bộ lịch sử, tách riêng khỏi trang Lịch sử theo yêu cầu —
+# xem đủ 4 mặt hàng cùng lúc, trải dài từ ngày cũ nhất đến mới nhất, không giới hạn ở 1 đợt)
 # ──────────────────────────────────────────
-elif nav_choice == "⚙  Huấn luyện mô hình":
+elif nav_choice == "📈  Biểu đồ":
     st.markdown("""
     <div style="margin-bottom: 22px;">
-        <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">QUẢN TRỊ HỆ THỐNG</div>
-        <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Huấn Luyện & Tinh Chỉnh Mô Hình</h1>
-        <p style="margin:0; color:#64748b; font-size:14px;">Khu vực quản trị dành cho việc cập nhật bộ não AI với chuỗi dữ liệu mới.</p>
+        <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRA CỨU & KIỂM TOÁN</div>
+        <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Biểu Đồ Đối Chiếu</h1>
+        <p style="margin:0; color:#64748b; font-size:14px;">Gộp toàn bộ các đợt nạp dữ liệu thành 1 chuỗi thời gian liên tục (cũ nhất → mới nhất) cho từng mặt hàng.</p>
     </div>
-    <div style="background:#f8fafc; border-left:4px solid #c77700; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
-        <b>💡 Cẩm nang huấn luyện & tối ưu mô hình:</b><br>
-        • <b>Khi nào nên huấn luyện?</b> Định kỳ 1 tháng/lần sau khi có đủ dữ liệu giá thực tế của tháng đó, hoặc khi Trang 2 cảnh báo MAPE &gt; 10%.<br>
-        • <b>Chế độ khuyến nghị:</b> Chọn <b>'⚡ Finetune từ checkpoint'</b> để mô hình cập nhật theo giá mới nhất mà không mất đi tri thức lịch sử đã học.<br>
-        • <b>Đánh giá nghiệm thu:</b> Sau khi chạy xong, chuyển sang <b>Tab 3: So sánh Kết quả (Benchmarking)</b> để đối chiếu phiên mới vs phiên cũ, nghiệm thu <b>% Cải thiện độ chính xác (Giảm sai số)</b>.
+    <div style="background:#f8fafc; border-left:4px solid #087762; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
+        <b>💡 Cách xem:</b> Chọn 1 chân trời dự báo (horizon) — hệ thống tự vẽ đủ 4 biểu đồ (MG95, MG92, DO 0.001%, DO 0.05%). Đường <b>nét liền xanh ngọc</b> là giá Thực tế, đường <b>nét đứt tím</b> là giá Dự báo. Hai đường càng bám sát nhau chứng tỏ mô hình dự đoán càng chính xác.
     </div>
     """, unsafe_allow_html=True)
 
-    tab_train, tab_history, tab_compare = st.tabs([
-        "🚀 Khởi chạy Huấn luyện",
-        "📋 Lịch sử & Dữ liệu đầu vào",
-        "📊 So sánh Kết quả (Benchmarking)"
-    ])
-
-    # ----------------------------------------------------
-    # TAB 1: KHỞI CHẠY HUẤN LUYỆN
-    # ----------------------------------------------------
-    with tab_train:
-        if is_gpu:
-            st.markdown("""
-            <div class="hub-notice gpu">
-                <b style="display:block; margin-bottom:2px;">⚡ Huấn luyện trên GPU NVIDIA CUDA</b>
-                Tốc độ tối ưu hóa cực nhanh (khoảng 10 - 20 giây mỗi mốc thời gian). Khuyến nghị thiết lập 50 Epochs để đạt độ hội tụ tối đa.
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="hub-notice cpu">
-                <b style="display:block; margin-bottom:2px;">💡 Huấn luyện trên CPU Doanh Nghiệp (6 vCPUs)</b>
-                Quá trình huấn luyện chạy ổn định và an toàn. Thời gian dự kiến khoảng 1 – 2 phút cho mỗi mốc. 
-                Trọng số mới chỉ được lưu sau khi kiểm tra nạp mô hình thành công 100%. Khuyến nghị giữ nguyên 25 – 30 Epochs.
-            </div>
-            """, unsafe_allow_html=True)
-            
-        # Việc C: kiểm tra khóa TRƯỚC khi vẽ các control cấu hình, để khi có job khác đang chạy,
-        # toàn bộ control (không chỉ nút Bắt đầu) đều bị khóa xám — tránh người dùng đổi tham số
-        # hoặc bấm lung tung gây nhầm lẫn/góp phần kích hoạt các thao tác xung đột giữa lúc job chạy.
-        active_lock = get_active_training_lock()
-        if active_lock:
-            st.warning(
-                f"⏳ **Đã có một Job Huấn luyện khác đang chạy** (bắt đầu lúc {active_lock.get('started_at', '?')}, "
-                f"mô hình: {', '.join(active_lock.get('models', []))}). "
-                "Hệ thống chỉ cho phép 1 job chạy tại một thời điểm để tránh ghi đè checkpoint. "
-                "Vui lòng đợi job hiện tại hoàn tất rồi thử lại — mọi tham số bên dưới tạm khóa."
-            )
-
-        st.markdown("#### Thiết lập tham số huấn luyện")
-        col_tmode, col_tep = st.columns([2, 1])
-        with col_tmode:
-            train_mode = st.selectbox("Chế độ huấn luyện:", ["⚡ Finetune từ checkpoint hiện tại (Khuyên dùng)", "🔁 Huấn luyện lại từ đầu"], disabled=bool(active_lock))
-        with col_tep:
-            n_epochs = st.number_input("Số vòng lặp (Epochs):", min_value=1, max_value=200, value=25 if not is_gpu else 50, help="Số epochs càng lớn, mô hình học càng sâu nhưng tốn nhiều thời gian hơn.", disabled=bool(active_lock))
-
-        sel_hz_manual = st.multiselect("Chọn các mốc cần cập nhật:", HORIZONS, default=HORIZONS, format_func=lambda h: f"{h} ngày (h{h})", disabled=bool(active_lock))
-
-        if st.button("🚀 Bắt đầu Job Huấn Luyện", key="btn_train_job_p4", type="primary", disabled=bool(active_lock)):
-            if not sel_models:
-                st.error("❌ Vui lòng chọn mô hình AI ở thanh điều khiển bên trái!")
-            elif not sel_hz_manual:
-                st.error("❌ Vui lòng chọn ít nhất một mốc thời gian!")
-            elif get_active_training_lock():
-                st.error("❌ Đã có job khác vừa bắt đầu chạy. Vui lòng tải lại trang và thử lại sau.")
-            else:
-                total_hz = len(sel_hz_manual)
-                progress_bar = st.progress(0)
-                status_box = st.status(f"⏳ Job đang chạy: Chuẩn bị môi trường cho {', '.join(sel_models)}...", expanded=True)
-
-                # Việc B: bảng tiến độ trực quan theo TỪNG MỐC (thay vì chỉ 1 thanh % chung chung) —
-                # đặc biệt hữu ích khi chạy CPU (chậm, người dùng cần biết đang chạy tới đâu).
-                hz_table_box = st.empty()
-                hz_order = sorted(sel_hz_manual)
-                hz_status = {h: {"state": "waiting", "val_loss": None} for h in hz_order}
-                current_hz = hz_order[0] if hz_order else None
-
-                def _render_hz_table():
-                    icon = {"waiting": "⚪", "running": "⏳", "done": "✅"}
-                    lines = []
-                    for h in hz_order:
-                        st_ = hz_status[h]
-                        txt = f"{icon[st_['state']]} Mốc {h} ngày: "
-                        if st_["state"] == "waiting":
-                            txt += "Đang chờ..."
-                        elif st_["state"] == "running":
-                            txt += "Đang tối ưu hóa..."
-                        else:
-                            vl = st_["val_loss"]
-                            txt += f"Đã xong (Val Loss: {vl:.5f})" if vl is not None else "Đã xong"
-                        lines.append(txt)
-                    hz_table_box.markdown("  \n".join(lines))
-
-                _render_hz_table()
-
-                import subprocess, re
-                cmd = [sys.executable, "train_all_horizons.py", "--update_data", "--epochs", str(n_epochs), "--models"] + sel_models + ["--horizons"] + [str(x) for x in sel_hz_manual]
-                if "Huấn luyện lại từ đầu" in train_mode:
-                    cmd.append("--force_retrain")
-
-                log_lines = []
-                hz_completed = 0
-                process = None
-
-                # Chấp nhận cả 2 kiểu chuỗi log GUMNet lẫn HybridTriNet in ra val loss — trước đây
-                # chỉ bắt "Best Val Loss" (chỉ GUMNet dùng), khiến thanh tiến trình đứng im 0% suốt
-                # phiên huấn luyện HybridTriNet dù nó vẫn chạy bình thường ở phía sau.
-                VAL_LOSS_RE = re.compile(r"(?:Best Val Loss:|best_val=)\s*([\d.]+)")
-                HZ_START_RE = re.compile(r"ĐANG HUẤN LUYỆN MỐC:\s*(\d+)\s*NGÀY")
-
-                acquire_training_lock(sel_models, sel_hz_manual)  # giữ chỗ, tránh race giữa 2 người dùng
-                try:
-                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
-                    acquire_training_lock(sel_models, sel_hz_manual, pid=process.pid)  # ghi đè bằng PID thật
-
-                    for line in process.stdout:
-                        log_lines.append(line)
-                        hz_match = HZ_START_RE.search(line)
-                        loss_match = VAL_LOSS_RE.search(line)
-                        if hz_match:
-                            h_started = int(hz_match.group(1))
-                            if h_started in hz_status:
-                                current_hz = h_started
-                                hz_status[h_started]["state"] = "running"
-                                _render_hz_table()
-                            status_box.write(f"📌 {line.strip()}")
-                        elif loss_match and current_hz is not None and current_hz in hz_status:
-                            hz_status[current_hz]["state"] = "done"
-                            hz_status[current_hz]["val_loss"] = float(loss_match.group(1))
-                            _render_hz_table()
-                            hz_completed = min(hz_completed + 1, total_hz)
-                            pct = int((hz_completed / total_hz) * 100)
-                            progress_bar.progress(pct)
-                            status_box.update(label=f"🔄 Đang tối ưu hóa... (Đã hoàn thành {hz_completed}/{total_hz} mốc - {pct}%)")
-
-                    process.wait()
-                    progress_bar.progress(100)
-
-                    if process.returncode == 0:
-                        status_box.update(label="✅ Quá trình huấn luyện đã hoàn tất thành công 100%!", state="complete", expanded=False)
-                        st.success("🎉 **CẬP NHẬT MÔ HÌNH THÀNH CÔNG!** Trọng số mạng nơ-ron mới đã được kiểm tra và lưu trữ. Dữ liệu phiên vừa hoàn tất đã được ghi nhận vào Lịch sử huấn luyện.")
-                        if CACHE_FILE.exists():
-                            try: os.remove(CACHE_FILE)
-                            except: pass
-                        st.cache_resource.clear()
-                        st.cache_data.clear()
-                    else:
-                        status_box.update(label=f"❌ Tiến trình kết thúc với mã: {process.returncode}", state="error")
-                        st.error("Có sự cố trong lúc huấn luyện. Mở rộng khung nhật ký kỹ thuật bên dưới để xem chi tiết.")
-                except Exception as e:
-                    status_box.update(label="❌ Lỗi khởi động tiến trình", state="error")
-                    st.error(f"Lỗi: {e}")
-                finally:
-                    # Lỗi #17 (đã xác nhận): trước đây luôn terminate() tiến trình con nếu người
-                    # dùng đổi trang giữa chừng — có thể cắt ngang đúng lúc đang ghi checkpoint
-                    # (torch.save), gây hỏng file. Từ giờ train_all_horizons.py TỰ quản lý lock
-                    # của chính nó (ghi lúc bắt đầu, tự xoá khi thực sự xong — xem file đó), nên
-                    # ở đây CHỈ dọn lock khi tiến trình con CHƯA từng chạy được (ví dụ Popen lỗi
-                    # ngay từ đầu) — còn nếu nó đang chạy thật, cứ để nó chạy nốt trong nền và tự
-                    # dọn lock của chính nó khi hoàn tất, dù script Streamlit này đã bị ngắt.
-                    if process is None or process.poll() is not None:
-                        release_training_lock()
-
-                if log_lines:
-                    with st.expander("🔍 Xem chi tiết nhật ký tiến trình kỹ thuật", expanded=False):
-                        st.code("".join(log_lines[-40:]), language="bash")
-
-    # ----------------------------------------------------
-    # TAB 2: LỊCH SỬ & DỮ LIỆU ĐẦU VÀO
-    # ----------------------------------------------------
-    with tab_history:
-        history_file = CKPT_DIR / "training_history.json"
-        entries = []
-        if history_file.exists():
-            try:
-                with open(history_file, "r", encoding="utf-8") as f:
-                    entries = json.load(f)
-            except Exception as e:
-                st.warning(f"Không thể đọc lịch sử huấn luyện: {e}")
-                
-        if not entries:
-            st.info("ℹ️ Hiện chưa có nhật ký phiên huấn luyện nào được ghi nhận.")
-        else:
-            # Top KPI Summary Cards
-            col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-            with col_k1:
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc;">
-                    <div style="font-size:11px; color:#64748b; font-weight:700; text-transform:uppercase;">Tổng số phiên</div>
-                    <div style="font-size:22px; font-weight:800; color:#0f172a; margin-top:2px;">{len(entries)} phiên</div>
-                    <div style="font-size:12px; color:#087762; margin-top:2px;">Đã lưu trữ an toàn</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_k2:
-                latest_sess = entries[0]
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc;">
-                    <div style="font-size:11px; color:#64748b; font-weight:700; text-transform:uppercase;">Phiên gần nhất</div>
-                    <div style="font-size:16px; font-weight:800; color:#0f172a; margin-top:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{latest_sess.get('session_id', '-')}</div>
-                    <div style="font-size:12px; color:#64748b; margin-top:2px;">{latest_sess.get('timestamp', '')}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_k3:
-                d_rows = latest_sess.get("data_info", {}).get("total_rows")
-                d_rows_txt = f"{d_rows:,} dòng" if isinstance(d_rows, (int, float)) else "Chưa rõ"
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc;">
-                    <div style="font-size:11px; color:#64748b; font-weight:700; text-transform:uppercase;">Quy mô tập dữ liệu</div>
-                    <div style="font-size:22px; font-weight:800; color:#00ad91; margin-top:2px;">{d_rows_txt}</div>
-                    <div style="font-size:12px; color:#64748b; margin-top:2px;">{latest_sess.get('data_info', {}).get('date_range', '')}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_k4:
-                avg_l = latest_sess.get("avg_val_loss")
-                loss_txt = f"{avg_l:.5f}" if avg_l is not None else "Tối ưu tốt"
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc;">
-                    <div style="font-size:11px; color:#64748b; font-weight:700; text-transform:uppercase;">Val Loss Trung bình</div>
-                    <div style="font-size:22px; font-weight:800; color:#7c3aed; margin-top:2px;">{loss_txt}</div>
-                    <div style="font-size:12px; color:#087762; margin-top:2px;">Hội tụ ổn định</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-            st.markdown("#### 📜 Danh sách các phiên huấn luyện đã thực hiện")
-            
-            # Format DataFrame for session listing
-            rows_table = []
-            for e in entries:
-                d_info = e.get("data_info", {})
-                rows_table.append({
-                    "Mã phiên": e.get("session_id", ""),
-                    "Thời gian": e.get("timestamp", ""),
-                    "Chế độ": e.get("mode", ""),
-                    "Mô hình": ", ".join(e.get("models", [])),
-                    "Thiết bị": e.get("device_name", e.get("device", "")),
-                    "Epochs": e.get("epochs", "-"),
-                    "Số dòng dữ liệu": f"{d_info.get('total_rows', 0):,} dòng",
-                    "Khoảng ngày dữ liệu": d_info.get("date_range", ""),
-                    "Val Loss TB": f"{e.get('avg_val_loss', 0):.5f}" if e.get("avg_val_loss") else "-"
-                })
-            safe_dataframe(pd.DataFrame(rows_table))
-            
-            st.markdown("---")
-            st.markdown("#### 🔍 Chi tiết dữ liệu đầu vào & kết quả theo phiên")
-            sess_choices = [e.get("session_id") for e in entries]
-            sel_s_id = st.selectbox("Chọn phiên cần kiểm tra chi tiết:", sess_choices, key="sel_sess_detail")
-            chosen_entry = next((e for e in entries if e.get("session_id") == sel_s_id), entries[0])
-            
-            c_d1, c_d2 = st.columns([1.1, 0.9])
-            with c_d1:
-                cd_info = chosen_entry.get("data_info", {})
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:16px; background:#ffffff;">
-                    <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase;">Dữ liệu huấn luyện đưa vào</div>
-                    <h3 style="margin:4px 0 12px; font-size:18px; color:#0f172a;">Chi tiết tập dữ liệu phiên {chosen_entry.get('session_id')}</h3>
-                    <table style="width:100%; font-size:13px; border-collapse:collapse;">
-                        <tr style="border-bottom:1px solid #f1f5f9;">
-                            <td style="padding:6px 0; color:#64748b;">Số mẫu dữ liệu:</td>
-                            <td style="padding:6px 0; font-weight:700; color:#0f172a; text-align:right;">{cd_info.get('total_rows', 0):,} dòng quan sát</td>
-                        </tr>
-                        <tr style="border-bottom:1px solid #f1f5f9;">
-                            <td style="padding:6px 0; color:#64748b;">Chu kỳ thời gian:</td>
-                            <td style="padding:6px 0; font-weight:700; color:#0f172a; text-align:right;">{cd_info.get('date_range', '-')}</td>
-                        </tr>
-                        <tr style="border-bottom:1px solid #f1f5f9;">
-                            <td style="padding:6px 0; color:#64748b;">Mặt hàng xăng dầu (Target):</td>
-                            <td style="padding:6px 0; font-weight:700; color:#0f172a; text-align:right;">{', '.join(cd_info.get('targets', []))}</td>
-                        </tr>
-                        <tr style="border-bottom:1px solid #f1f5f9;">
-                            <td style="padding:6px 0; color:#64748b;">Chế độ & Vòng lặp:</td>
-                            <td style="padding:6px 0; font-weight:700; color:#0f172a; text-align:right;">{chosen_entry.get('mode')} ({chosen_entry.get('epochs')} Epochs)</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:6px 0; color:#64748b;">Ghi chú tệp nguồn:</td>
-                            <td style="padding:6px 0; color:#087762; font-weight:600; text-align:right;">{cd_info.get('note', 'Tập dữ liệu chuẩn hóa hệ thống')}</td>
-                        </tr>
-                    </table>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            with c_d2:
-                res = chosen_entry.get("results", {})
-                st.markdown(f"""
-                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:16px; background:#ffffff;">
-                    <div style="color:#7c3aed; font-size:12px; font-weight:800; text-transform:uppercase;">Kết quả hội tụ (Validation Loss)</div>
-                    <h3 style="margin:4px 0 12px; font-size:18px; color:#0f172a;">Sai số kiểm định theo mốc thời gian</h3>
-                """, unsafe_allow_html=True)
-                
-                loss_table = []
-                for hz in HORIZONS:
-                    g_key = f"GUMNet_h{hz}"
-                    h_key = f"HybridTriNet_h{hz}"
-                    gen_key = f"h{hz}"
-                    g_val = res.get(g_key, res.get(gen_key, "-"))
-                    h_val = res.get(h_key, "-")
-                    loss_table.append({
-                        "Mốc dự báo": f"+{hz} ngày",
-                        "GUMNet Loss": f"{g_val:.5f}" if isinstance(g_val, (int, float)) else str(g_val),
-                        "HybridTriNet Loss": f"{h_val:.5f}" if isinstance(h_val, (int, float)) else str(h_val)
-                    })
-                safe_dataframe(pd.DataFrame(loss_table))
-                st.markdown("</div>", unsafe_allow_html=True)
-
-    # ----------------------------------------------------
-    # TAB 3: SO SÁNH KẾT QUẢ (BENCHMARKING)
-    # ----------------------------------------------------
-    with tab_compare:
-        history_file = CKPT_DIR / "training_history.json"
-        entries = []
-        if history_file.exists():
-            try:
-                with open(history_file, "r", encoding="utf-8") as f:
-                    entries = json.load(f)
-            except:
-                entries = []
-                
-        if len(entries) < 2:
-            st.info("ℹ️ Cần ít nhất 2 phiên huấn luyện trong lịch sử để thực hiện so sánh đối chiếu (Benchmarking).")
-        else:
-            st.markdown("#### Đối chiếu kết quả giữa 2 phiên huấn luyện")
-            st.caption("Chọn hai phiên bất kỳ để đánh giá mức độ cải thiện sai số và sự thay đổi của tập dữ liệu đưa vào:")
-            
-            c_sel1, c_sel2 = st.columns(2)
-            sess_ids = [e.get("session_id") for e in entries]
-            with c_sel1:
-                s1_id = st.selectbox("📌 Phiên đối chứng (Trước / Baseline):", sess_ids, index=min(1, len(sess_ids)-1), key="s1_bench")
-            with c_sel2:
-                s2_id = st.selectbox("🎯 Phiên kiểm tra (Sau / Cập nhật):", sess_ids, index=0, key="s2_bench")
-                
-            e1 = next(e for e in entries if e.get("session_id") == s1_id)
-            e2 = next(e for e in entries if e.get("session_id") == s2_id)
-            
-            # Loss Improvement KPI
-            l1 = e1.get("avg_val_loss")
-            l2 = e2.get("avg_val_loss")
-            if l1 and l2:
-                diff = l1 - l2
-                pct_imp = (diff / l1) * 100
-                is_better = pct_imp >= 0
-                
-                col_imp1, col_imp2, col_imp3 = st.columns(3)
-                with col_imp1:
-                    st.metric(label=f"Val Loss: {s1_id}", value=f"{l1:.5f}")
-                with col_imp2:
-                    st.metric(label=f"Val Loss: {s2_id}", value=f"{l2:.5f}", delta=f"{'-' if is_better else '+'}{abs(diff):.5f}")
-                with col_imp3:
-                    st.metric(label="Mức độ cải thiện độ chính xác", value=f"{abs(pct_imp):.2f}%", delta="Tốt hơn (Giảm sai số)" if is_better else "Tăng sai số", delta_color="normal" if is_better else "inverse")
-            
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-            
-            # Comparison Table
-            st.markdown("##### 1. Đối chiếu quy mô dữ liệu & cấu hình")
-            d1_info = e1.get("data_info", {})
-            d2_info = e2.get("data_info", {})
-            
-            r1 = d1_info.get("total_rows", 0)
-            r2 = d2_info.get("total_rows", 0)
-            diff_r = r2 - r1
-            diff_r_txt = f"{'+' if diff_r >= 0 else ''}{diff_r:,} dòng"
-            
-            cmp_specs = [
-                {"Tiêu chí": "Mã phiên", s1_id: str(s1_id), s2_id: str(s2_id), "Chênh lệch / Đánh giá": "-"},
-                {"Tiêu chí": "Thời gian thực hiện", s1_id: str(e1.get("timestamp", "-")), s2_id: str(e2.get("timestamp", "-")), "Chênh lệch / Đánh giá": "-"},
-                {"Tiêu chí": "Chế độ huấn luyện", s1_id: str(e1.get("mode", "-")), s2_id: str(e2.get("mode", "-")), "Chênh lệch / Đánh giá": "-"},
-                {"Tiêu chí": "Số dòng dữ liệu đầu vào", s1_id: f"{r1:,} dòng", s2_id: f"{r2:,} dòng", "Chênh lệch / Đánh giá": str(diff_r_txt)},
-                {"Tiêu chí": "Khoảng thời gian dữ liệu", s1_id: str(d1_info.get("date_range", "-")), s2_id: str(d2_info.get("date_range", "-")), "Chênh lệch / Đánh giá": "Cập nhật chuỗi mới" if d1_info.get("date_range") != d2_info.get("date_range") else "Tương đương"},
-                {"Tiêu chí": "Số Epochs", s1_id: str(e1.get("epochs", "-")), s2_id: str(e2.get("epochs", "-")), "Chênh lệch / Đánh giá": f"{e2.get('epochs', 0) - e1.get('epochs', 0):+} epochs"},
-                {"Tiêu chí": "Thiết bị tính toán", s1_id: str(e1.get("device_name", e1.get("device", "-"))), s2_id: str(e2.get("device_name", e2.get("device", "-"))), "Chênh lệch / Đánh giá": "-"},
-            ]
-            safe_dataframe(pd.DataFrame(cmp_specs))
-            
-            st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-            st.markdown("##### 2. Đối chiếu chi tiết Sai số Kiểm định (Validation Loss) theo Horizon")
-            
-            res1 = e1.get("results", {})
-            res2 = e2.get("results", {})
-            
-            hz_bench_data = []
-            bar_horizons = []
-            bar_s1_loss = []
-            bar_s2_loss = []
-            
-            for hz in HORIZONS:
-                v1 = res1.get(f"GUMNet_h{hz}", res1.get(f"h{hz}"))
-                v2 = res2.get(f"GUMNet_h{hz}", res2.get(f"h{hz}"))
-                
-                v1_num = float(v1) if isinstance(v1, (int, float)) else None
-                v2_num = float(v2) if isinstance(v2, (int, float)) else None
-                
-                imp_str = "-"
-                if v1_num is not None and v2_num is not None:
-                    h_diff = v1_num - v2_num
-                    h_pct = (h_diff / v1_num) * 100
-                    imp_str = f"🟢 Giảm {abs(h_pct):.2f}%" if h_diff >= 0 else f"🔴 Tăng {abs(h_pct):.2f}%"
-                    bar_horizons.append(f"+{hz}d")
-                    bar_s1_loss.append(v1_num)
-                    bar_s2_loss.append(v2_num)
-                    
-                hz_bench_data.append({
-                    "Mốc Horizon": f"+{hz} ngày (h{hz})",
-                    f"Loss ({s1_id})": f"{v1_num:.5f}" if v1_num is not None else "-",
-                    f"Loss ({s2_id})": f"{v2_num:.5f}" if v2_num is not None else "-",
-                    "Hiệu quả cải thiện": imp_str
-                })
-                
-            col_btable, col_bchart = st.columns([1, 1.2])
-            with col_btable:
-                safe_dataframe(pd.DataFrame(hz_bench_data))
-                
-            with col_bchart:
-                if bar_horizons:
-                    fig_cmp = go.Figure()
-                    fig_cmp.add_trace(go.Bar(
-                        x=bar_horizons,
-                        y=bar_s1_loss,
-                        name=f"Phiên đối chứng ({s1_id})",
-                        marker_color="#94a3b8"
-                    ))
-                    fig_cmp.add_trace(go.Bar(
-                        x=bar_horizons,
-                        y=bar_s2_loss,
-                        name=f"Phiên kiểm tra ({s2_id})",
-                        marker_color="#00d4aa"
-                    ))
-                    fig_cmp.update_layout(
-                        title="Đối chiếu Validation Loss (Càng thấp mô hình càng chuẩn xác)",
-                        barmode="group",
-                        template="plotly_dark",
-                        height=340,
-                        # Lỗi đã xác nhận: legend ngang neo ở y=1.02 (ngay sát phía trên khung vẽ)
-                        # dùng chung vùng không gian với tiêu đề dài phía trên -> chồng chữ khi
-                        # tiêu đề đủ dài (đặc biệt màn hình rộng). Chuyển legend xuống DƯỚI biểu đồ
-                        # để không bao giờ tranh chỗ với tiêu đề nữa, bất kể tiêu đề dài ngắn thế nào.
-                        margin=dict(l=20, r=20, t=40, b=60),
-                        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
-                        # Lỗi đã xác nhận: tên trace "Phiên đối chứng (TR-...)" khá dài, Plotly mặc
-                        # định cắt bớt bằng "..." khi hiện tooltip hover. namelength=-1 = hiện đầy đủ,
-                        # không cắt nữa.
-                        hoverlabel=dict(namelength=-1)
-                    )
-                    safe_plotly_chart(fig_cmp)
+    if not df_view.empty:
+        sh_full = st.selectbox("Chọn chân trời dự báo:", [f"{h}d" for h in HORIZONS], key="sh_chart_full_page")
+        sub_full = df_view[df_view["Horizon"] == sh_full]
+        for tgt_full in TARGET_COLS:
+            tsub_full = sub_full[sub_full["Target"] == tgt_full]
+            if tsub_full.empty:
+                continue
+            fig_full = go.Figure()
+            for m in sel_models:
+                ms_full = tsub_full[tsub_full["Model"] == m].sort_values(DATE_COL)
+                if not ms_full.empty:
+                    fig_full.add_trace(go.Scatter(x=ms_full[DATE_COL], y=ms_full["Dự báo"], name=f"Dự báo ({m})", mode="lines+markers", line=dict(dash="dash", color="#7c3aed")))
+            act_full = tsub_full.drop_duplicates(DATE_COL).sort_values(DATE_COL)
+            fig_full.add_trace(go.Scatter(x=act_full[DATE_COL], y=act_full["Thực tế"], name="Thực tế", mode="lines+markers", line=dict(color="#00d4aa", width=3)))
+            fig_full.update_layout(title=f"{tgt_full} ({sh_full}) — toàn bộ lịch sử", template="plotly_dark", height=380, hovermode="x unified")
+            safe_plotly_chart(fig_full)
+    else:
+        st.info("Chưa có dữ liệu lịch sử đối chiếu.")
 
 
 # ──────────────────────────────────────────
@@ -2466,92 +2598,117 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
     st.markdown("""
     <div style="margin-bottom: 22px;">
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">HƯỚNG DẪN VẬN HÀNH</div>
-        <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Hướng Dẫn Sử Dụng & Vận Hành Hệ Thống</h1>
-        <p style="margin:0; color:#64748b; font-size:14px;">Các bước vận hành chuẩn hóa, hướng dẫn tương tác với mũi tên và giải thích chi tiết CPU/GPU.</p>
+        <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Hướng Dẫn Sử Dụng &amp; Vận Hành Hệ Thống</h1>
+        <p style="margin:0; color:#64748b; font-size:14px;">Quy chuẩn dữ liệu đầu vào, cách đọc chỉ số sai số và cơ chế tự động hóa GUMNet ngầm.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # 1. Thông báo nhận diện phần cứng máy chủ hiện tại
-    if is_gpu:
+    # 1. Khung tải file mẫu và cấu trúc cột bắt buộc
+    st.markdown("#### 📥 Tệp Mẫu Dữ Liệu Thị Trường &amp; Cấu Trúc Cột")
+    col_t1, col_t2 = st.columns([1.2, 0.8])
+    with col_t1:
         st.markdown("""
-        <div style="background:#eafaf5; border:1px solid #bcebdc; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
-            <b style="color:#087762; font-size:15px;">🖥️ Nhận diện phần cứng máy chủ: Đang kích hoạt GPU NVIDIA CUDA</b>
-            <p style="color:#2d5a50; font-size:13px; margin:4px 0 0; line-height:1.5;">
-                Hệ thống đã tự động nhận diện và cấu hình tăng tốc phần cứng tối đa. 
-                Mọi thao tác Dự báo &amp; Đánh giá diễn ra tức thì (&lt; 1s). 
-                Khi Huấn luyện mô hình (Trang 4), hệ thống tự động tối ưu với mức <b>50 Epochs</b> (tốc độ siêu nhanh khoảng 10–20 giây mỗi mốc thời gian).
-            </p>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:16px; font-size:13px; color:#334155;">
+            <b>Bảng tính tải lên cần đáp ứng các điều kiện sau:</b><br>
+            • <b>Định dạng hỗ trợ:</b> <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>.<br>
+            • <b>Cột thời gian:</b> Cần có cột <code>Ngày</code> (hoặc <code>Date</code>, <code>ngay</code>).<br>
+            • <b>Các cột giá mục tiêu:</b> <code>MG95</code>, <code>MG92</code> (USD/thùng), <code>DO 0.001%</code>, <code>DO 0.05%</code> (USD/tấn). Có thể có 1 hoặc nhiều cột.<br>
+            • <b>Kiểu dữ liệu:</b> Số thực dương, không chứa công thức macro hay giá trị âm.<br>
+            • <b>Dữ liệu độc lập:</b> Hệ thống kiểm tra từng file riêng biệt. File lỗi sẽ bị từ chối mà không làm ảnh hưởng đến các file hợp lệ khác.
         </div>
         """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style="background:#fff7e7; border:1px solid #f6d58c; border-radius:10px; padding:14px 18px; margin-bottom:20px;">
-            <b style="color:#9b6100; font-size:15px;">🖥️ Nhận diện phần cứng máy chủ: Đang chạy CPU Doanh Nghiệp (6 vCPUs)</b>
-            <p style="color:#6d4800; font-size:13px; margin:4px 0 0; line-height:1.5;">
-                Hệ thống đang vận hành hoàn toàn ổn định và an toàn trên nền tảng CPU. 
-                Dự báo giá thị trường diễn ra nhanh chóng (&lt; 1s). 
-                Khi Huấn luyện mô hình (Trang 4), hệ thống tự động tối ưu với mức <b>25 Epochs</b> (chỉ mất 1–2 phút mỗi mốc thời gian), đảm bảo an toàn tuyệt đối và không chiếm dụng tài nguyên.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+    with col_t2:
+        template_file = ROOT / "assets" / "file_mau_gia_dau.xlsx"
+        if template_file.exists():
+            st.markdown("""
+            <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:16px; text-align:center;">
+                <div style="font-size:32px; margin-bottom:6px;">📊</div>
+                <b style="color:#087762; font-size:14px;">Tải Tệp Excel Mẫu Chuẩn</b><br>
+                <small style="color:#64748b;">Đã định dạng sẵn cột Ngày và 4 cột giá tiêu chuẩn.</small>
+                <div style="height:12px;"></div>
+            """, unsafe_allow_html=True)
+            st.download_button(
+                label="📥 Tải File Mẫu (.xlsx)",
+                data=template_file.read_bytes(),
+                file_name="file_mau_gia_dau.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_template_btn",
+                use_container_width=True,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    # 2. Sơ đồ quy trình vận hành 4 bước chuẩn hóa
+    st.markdown("---")
+
+    # 2. Quy trình vận hành 4 bước khép kín
     st.markdown("""
-    #### 🔄 Sơ Đồ Quy Trình Vận Hành 4 Bước Khép Kín
+    #### 🔄 Quy Trình Tự Động Hóa Khép Kín Phía Sau (Zero-Touch)
     <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:10px 0 24px;">
         <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
             <div style="font-size:24px; margin-bottom:4px;">📥</div>
-            <b style="color:#00ad91; font-size:13px;">BƯỚC 1: NẠP DỮ LIỆU</b>
-            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Kéo thả file Excel mới vào Trang 1. Bảng giá 7 mốc hiện ra ngay.</p>
+            <b style="color:#00ad91; font-size:13px;">1. NẠP DỮ LIỆU</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Kéo thả 1 hoặc nhiều file. Hệ thống tự kiểm định schema và phát hiện ngày mới.</p>
+        </div>
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
+            <div style="font-size:24px; margin-bottom:4px;">🔮</div>
+            <b style="color:#6954d9; font-size:13px;">2. DỰ BÁO TỨC THÌ</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">GUMNet Production tạo ngay dự báo 7 mốc (+1d đến +60d) mà không cần đợi huấn luyện.</p>
         </div>
         <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
             <div style="font-size:24px; margin-bottom:4px;">📊</div>
-            <b style="color:#6954d9; font-size:13px;">BƯỚC 2: KIỂM ĐỊNH</b>
-            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Sang Trang 2 xem sai số MAPE. Xanh (&lt; 7%) là an toàn dùng ngay.</p>
+            <b style="color:#087762; font-size:13px;">3. ĐỐI CHIẾU NGẦM</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Hệ thống tự động so khớp giá thực tế mới với dự báo cũ để tính MAE/MAPE.</p>
         </div>
         <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
-            <div style="font-size:24px; margin-bottom:4px;">⚙️</div>
-            <b style="color:#c77700; font-size:13px;">BƯỚC 3: FINETUNE</b>
-            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Nếu MAPE &gt; 10%: Sang Trang 4 bấm Finetune để AI học giá mới.</p>
-        </div>
-        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
-            <div style="font-size:24px; margin-bottom:4px;">📁</div>
-            <b style="color:#087762; font-size:13px;">BƯỚC 4: LƯU BÁO CÁO</b>
-            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Xuất file CSV nộp lãnh đạo. Dữ liệu lưu vĩnh viễn ở Trang 3.</p>
+            <div style="font-size:24px; margin-bottom:4px;">🧠</div>
+            <b style="color:#c77700; font-size:13px;">4. TỰ TỐI ƯU GUMNET</b>
+            <p style="font-size:12px; color:#64748b; margin:4px 0 0;">Nếu MAPE &gt; 10% và đủ mẫu, candidate tự huấn luyện ngầm và chỉ thay thế khi tốt hơn.</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("#### 🎯 Hướng Dẫn Trực Quan Với Mũi Tên Chỉ Dẫn")
-    st.caption("Bấm vào các thẻ bên dưới để hệ thống kích hoạt mũi tên phát sáng dẫn đường từng bước trực tiếp trên màn hình (Không gây tải máy chủ, phản hồi tức thì 0ms):")
-    
-    st.markdown("""
-    <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:14px; margin-top:10px;">
-        <button class="guide-action" data-oil-tour="forecast">
-            <b style="color:#00ad91; font-size:15px;">◈ Tạo dự báo đầu tiên</b>
-            <small style="color:#64748b; font-size:13px;">Mũi tên chỉ dẫn cách Upload file, chọn mốc và đọc bảng kết quả giá.</small>
-        </button>
-        <button class="guide-action" data-oil-tour="metrics">
-            <b style="color:#6954d9; font-size:15px;">▦ Đọc sai số MAPE & MAE</b>
-            <small style="color:#64748b; font-size:13px;">Mũi tên chỉ dẫn các thẻ chỉ số độ tin cậy và biểu đồ sai số theo thời gian.</small>
-        </button>
-        <button class="guide-action" data-oil-tour="training">
-            <b style="color:#c77700; font-size:15px;">⚙ Quản trị & Huấn luyện mô hình</b>
-            <small style="color:#64748b; font-size:13px;">Mũi tên chỉ dẫn chọn mốc, số epochs, xem lịch sử và so sánh Benchmarking.</small>
-        </button>
-        <button class="guide-action" data-oil-tour="history">
-            <b style="color:#087762; font-size:15px;">◷ Lịch sử & Xuất báo cáo</b>
-            <small style="color:#64748b; font-size:13px;">Mũi tên chỉ dẫn tra cứu các đợt file, đồ thị đối chiếu và xuất file CSV.</small>
-        </button>
-    </div>
-    <div style="margin-top:16px; margin-bottom:20px;">
-        <button class="oil-btn oil-btn-ghost" id="oil-replay-btn" style="font-size:13px;">↺ Xem lại thông báo chào mừng & hướng dẫn từ đầu</button>
-    </div>
-    """, unsafe_allow_html=True)
+    # 3. Hướng dẫn đọc chỉ số & Ý nghĩa màu sắc
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        st.markdown("""
+        <div class="guide-card">
+            <h3 style="margin:0 0 10px; font-size:16px; color:#0f172a;">📊 Cách đọc chỉ số sai số &amp; Ý nghĩa màu sắc</h3>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#087762;">🟢 Xanh lá (MAPE &lt; 7.0%):</b><br>
+                <span style="color:#64748b;">MAPE đang dưới ngưỡng tham khảo 7%. Nên xem thêm số mẫu, MAE và kết quả theo từng mốc trước khi sử dụng.</span>
+            </div>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#c77700;">🟡 Màu vàng (7.0% ≤ MAPE ≤ 10.0%):</b><br>
+                <span style="color:#64748b;">Cần tiếp tục theo dõi. Sai số vẫn nằm trong ngưỡng chấp nhận được của thị trường.</span>
+            </div>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#dc2626;">🔴 Màu đỏ (MAPE &gt; 10.0%):</b><br>
+                <span style="color:#64748b;">Hệ thống tự động kích hoạt tiến trình huấn luyện GUMNet Candidate ngầm để thích ứng với biến động mới.</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Lỗi #18 (đã xác nhận): 2 file PDF hướng dẫn đã có sẵn trong project nhưng chưa hề được
-    # cung cấp nút tải trên giao diện — người dùng LAN không có cách nào lấy được tài liệu này
-    # ngoại trừ tự tìm trong thư mục cài đặt.
+    with col_c2:
+        st.markdown("""
+        <div class="guide-card">
+            <h3 style="margin:0 0 10px; font-size:16px; color:#0f172a;">🎯 Ý nghĩa các mốc chân trời dự báo (Horizons)</h3>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#00ad91;">+1 ngày &amp; +5 ngày:</b><br>
+                <span style="color:#64748b;">Dự báo ngắn hạn phục vụ đặt lệnh mua bán hàng ngày và kế hoạch giao dịch trong tuần.</span>
+            </div>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#6954d9;">+10 ngày &amp; +15 ngày &amp; +20 ngày:</b><br>
+                <span style="color:#64748b;">Dự báo trung hạn bám theo các kỳ điều hành giá xăng dầu và cân đối tồn kho nửa tháng.</span>
+            </div>
+            <div style="border-top:1px solid #f1f5f9; padding:8px 0; font-size:13px;">
+                <b style="color:#087762;">+30 ngày &amp; +60 ngày:</b><br>
+                <span style="color:#64748b;">Dự báo dài hạn phục vụ chiến lược nhập khẩu, hợp đồng tương lai và kế hoạch tài chính quý.</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # 4. Tài liệu PDF đính kèm
     _pdf_guides = [
         ("📕 Hướng dẫn Cấu hình & Triển khai (PDF)", ROOT / "HUONG_DAN_CAU_HINH_VA_TRIEN_KHAI.pdf"),
         ("📗 Hướng dẫn Triển khai & Sử dụng (PDF)", ROOT / "HUONG_DAN_TRIEN_KHAI_VA_SU_DUNG.pdf"),
@@ -2571,132 +2728,6 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
                 )
 
     st.markdown("---")
-    st.markdown("#### 📖 4 Bước Nghiệp Vụ Chuẩn Hóa")
-    
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        st.markdown("""
-        <div class="guide-card">
-            <b style="font-size:16px; color:#1e293b;">◈ 1. Tạo dự báo giá mới</b><br>
-            <p style="font-size:13px; color:#64748b; margin:6px 0 10px;">
-                Vào mục <b>Dự báo</b> ➔ Kéo thả tệp Excel dữ liệu mới ➔ Hệ thống tự động nhận diện ngày dữ liệu cuối cùng và tính toán dự báo cho 7 mốc thời gian (+1d, +5d, +10d, +15d, +20d, +30d, +60d) trong chưa đầy 1 giây.<br>
-                Nhấn nút <b>Xuất CSV/Excel</b> để tải báo cáo giá gửi lãnh đạo.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with col_g2:
-        st.markdown("""
-        <div class="guide-card">
-            <b style="font-size:16px; color:#1e293b;">▦ 2. Cách đọc chỉ số sai số (MAPE & MAE)</b><br>
-            <p style="font-size:13px; color:#64748b; margin:6px 0 10px;">
-                Vào mục <b>Đánh giá mô hình</b> để theo dõi độ tin cậy:<br>
-                - <b>MAPE &lt; 7% (Xanh):</b> Mô hình dự báo rất chính xác, bám sát nhịp biến động của thị trường xăng dầu.<br>
-                - <b>MAPE 7% – 10% (Vàng):</b> Mô hình ổn định, nằm trong dung sai cho phép.<br>
-                - <b>MAPE &gt; 10% (Đỏ):</b> Thị trường vừa xảy ra biến động mạnh, khuyến nghị Finetune mô hình.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    
-    col_g3, col_g4 = st.columns(2)
-    with col_g3:
-        st.markdown("""
-        <div class="guide-card">
-            <b style="font-size:16px; color:#1e293b;">⚙ 3. Khi nào cần Huấn luyện (Finetune)?</b><br>
-            <p style="font-size:13px; color:#64748b; margin:6px 0 10px;">
-                Vào mục <b>Huấn luyện mô hình</b> định kỳ 1 tháng/lần sau khi có đủ dữ liệu thực tế của tháng đó.<br>
-                Cơ chế Finetune hấp thụ thêm quy luật giá mới nhất mà vẫn giữ vững tri thức lịch sử đã học, giúp nâng cao độ chính xác mà không làm hỏng mô hình.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with col_g4:
-        st.markdown("""
-        <div class="guide-card">
-            <b style="font-size:16px; color:#1e293b;">◷ 4. Tra cứu lịch sử & Kiểm toán dữ liệu</b><br>
-            <p style="font-size:13px; color:#64748b; margin:6px 0 10px;">
-                Vào mục <b>Lịch sử & Xuất dữ liệu</b> để kiểm tra lại các lần dự báo trong quá khứ.<br>
-                Hệ thống lưu giữ đầy đủ tệp dữ liệu, ngày tháng và bảng đối chiếu Thực tế vs Dự báo giúp phục vụ công tác thanh tra, kiểm toán bất cứ lúc nào.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    
-    col_k1, col_k2 = st.columns(2)
-    with col_k1:
-        st.markdown("""
-        <div class="guide-card">
-            <h3 style="margin:0 0 10px; font-size:16px; color:#0f172a;">💡 Dự báo, Đánh giá và Huấn luyện khác nhau thế nào?</h3>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#00ad91;">1. Dự báo:</b><br>
-                <small style="color:#64748b;">Mô hình tạo giá dự kiến cho 1–60 ngày làm việc từ dữ liệu có sẵn tại thời điểm đó. Không cần có giá tương lai.</small>
-            </div>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#6954d9;">2. Đánh giá / Backtesting:</b><br>
-                <small style="color:#64748b;">Sau khi tải file có giá thực tế của các ngày đã dự báo, hệ thống mới đối chiếu Dự báo với Thực tế để tính MAE và MAPE.</small>
-            </div>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#c77700;">3. Huấn luyện / Finetune:</b><br>
-                <small style="color:#64748b;">Dùng dữ liệu mới để cập nhật trọng số mạng nơ-ron. Mô hình hấp thụ thêm quy luật giá mới nhất mà không mất đi tri thức lịch sử.</small>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_k2:
-        st.markdown("""
-        <div class="guide-card">
-            <h3 style="margin:0 0 10px; font-size:16px; color:#0f172a;">📋 Quy tắc dữ liệu và ngày dự báo</h3>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#9b6100;">! Dữ liệu quá cũ:</b><br>
-                <small style="color:#64748b;">Nếu ngày cuối trong file quá 7 ngày làm việc so với ngày chạy, hệ thống khuyến nghị nạp thêm dữ liệu cập nhật.</small>
-            </div>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#087762;">✓ Giới hạn chân trời 60 ngày:</b><br>
-                <small style="color:#64748b;">Mô hình hỗ trợ chuẩn hóa các mốc từ 1 ngày đến tối đa 60 ngày làm việc tương ứng với 7 checkpoints đã tối ưu.</small>
-            </div>
-            <div style="border-top:1px solid #f1f5f9; padding:8px 0;">
-                <b style="color:#0f172a;">✓ Cuối tuần và ngày nghỉ:</b><br>
-                <small style="color:#64748b;">Hệ thống tự động bỏ qua Thứ Bảy và Chủ Nhật để chuỗi thời gian dự báo luôn khớp với các phiên giao dịch thực tế.</small>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    
-    st.markdown("#### 💻 Bảng Đối Chiếu Kỹ Thuật: Chế Độ CPU vs GPU")
-    st.caption("Giải thích sự khác biệt giữa hai môi trường phần cứng máy chủ để bạn hoàn toàn an tâm khi vận hành:")
-    
-    table_hw = pd.DataFrame([
-        {
-            "Nhiệm vụ nghiệp vụ": "🔮 Dự báo thị trường (Inference)",
-            "Chế độ CPU (6 vCPUs)": "⚡ Dưới 1 giây (Tức thì)",
-            "Chế độ GPU NVIDIA CUDA": "⚡ Dưới 1 giây (Tức thì)",
-            "Độ chính xác mô hình": "✅ 100% giống nhau (Cùng trọng số)"
-        },
-        {
-            "Nhiệm vụ nghiệp vụ": "📊 Đánh giá sai số (Backtesting)",
-            "Chế độ CPU (6 vCPUs)": "Khoảng 1 – 3 giây",
-            "Chế độ GPU NVIDIA CUDA": "Khoảng 1 giây",
-            "Độ chính xác mô hình": "✅ 100% giống nhau"
-        },
-        {
-            "Nhiệm vụ nghiệp vụ": "⚙ Huấn luyện lại (Finetuning)",
-            "Chế độ CPU (6 vCPUs)": "1 – 2 phút / mốc (Khuyến nghị 25 epochs)",
-            "Chế độ GPU NVIDIA CUDA": "10 – 20 giây / mốc (Khuyến nghị 50 epochs)",
-            "Độ chính xác mô hình": "✅ Tương đương hoàn toàn"
-        },
-        {
-            "Nhiệm vụ nghiệp vụ": "🔒 Độ an toàn & Ổn định",
-            "Chế độ CPU (6 vCPUs)": "Rất ổn định, không chiếm dụng GPU",
-            "Chế độ GPU NVIDIA CUDA": "Hiệu năng xử lý song song tối đa",
-            "Độ chính xác mô hình": "Chuẩn hóa cấp doanh nghiệp"
-        }
-    ])
-    safe_dataframe(table_hw.set_index("Nhiệm vụ nghiệp vụ"))
-
-    st.markdown("---")
     st.markdown("#### ❓ Giải Đáp Thắc Mắc Nghiệp Vụ Thường Gặp (FAQ)")
     
     col_faq1, col_faq2 = st.columns(2)
@@ -2712,26 +2743,23 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <div class="guide-card">
             <b style="color:#0f172a; font-size:14px;">2. Tệp tải lên có bắt buộc đủ cả 4 mặt hàng không?</b>
             <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
-                Không bắt buộc. Nếu tệp Excel của bạn chỉ có giá MG95 và DO 0.05%, hệ thống vẫn tự động trích xuất và tính toán dự báo chuẩn xác cho các mặt hàng đó.
+                Không bắt buộc. Nếu tệp Excel chỉ có giá MG95 và DO 0.05%, hệ thống sẽ xử lý các cột nhận diện được và hiển thị kết quả tương ứng.
             </p>
         </div>
         """, unsafe_allow_html=True)
     with col_faq2:
         st.markdown("""
         <div class="guide-card">
-            <b style="color:#0f172a; font-size:14px;">3. Vì sao không có ngày dự báo vào Thứ Bảy &amp; Chủ Nhật?</b>
+            <b style="color:#0f172a; font-size:14px;">3. Khi hệ thống đang tự tối ưu mô hình, tôi có xem dự báo được không?</b>
             <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
-                Thị trường xăng dầu quốc tế đóng cửa vào cuối tuần. Chuỗi dự báo tự động bỏ qua ngày nghỉ để luôn trùng khớp với các phiên giao dịch thực tế.
+                Có. Quá trình tối ưu candidate chạy nền; trong điều kiện hệ thống hoạt động bình thường, GUMNet Production hiện tại vẫn được dùng để xem và xuất dự báo.
             </p>
         </div>
         <div style="height:10px;"></div>
         <div class="guide-card">
             <b style="color:#0f172a; font-size:14px;">4. Đơn vị tiền tệ của các mặt hàng được tính thế nào?</b>
             <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
-                Xăng MG95 và MG92 tính theo <b>USD/thùng</b> (Platts Singapore). Dầu DO 0.001% và DO 0.05% tính theo <b>USD/tấn</b> chuẩn thị trường quốc tế.
+                Theo cấu hình dữ liệu hiện tại, MG95 và MG92 được hiển thị theo <b>USD/thùng</b>; DO 0.001% và DO 0.05% được hiển thị theo <b>USD/tấn</b>.
             </p>
         </div>
         """, unsafe_allow_html=True)
-
-
-
