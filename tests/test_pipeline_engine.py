@@ -68,6 +68,53 @@ class PipelineEngineTests(unittest.TestCase):
         self.assertFalse(on_disk["is_running"])
         self.assertEqual(on_disk["steps"][1]["state"], "failed")
 
+    # Lỗi thật đã sửa: khóa bị cướp sau 600s DÙ tiến trình vẫn sống, trong khi 1 lượt chạy
+    # hợp lệ (đối chiếu + huấn luyện candidate) có thể lâu hơn thế -> 2 pipeline chạy song song.
+    def test_live_lock_is_not_stolen_before_stale_timeout(self):
+        import os
+        import time as _time
+
+        # Khóa của 1 tiến trình CÒN SỐNG (chính tiến trình test), đã giữ 11 phút —
+        # dài hơn thời gian huấn luyện tối đa nhưng vẫn trong hạn cho phép.
+        pe.LOCK_FILE.write_text(json.dumps({
+            "pipeline_id": "PIPE-DANG-HUAN-LUYEN",
+            "pid": os.getpid(),
+            "created_at": _time.time() - (pe.TRAIN_TIMEOUT + 60),
+        }), encoding="utf-8")
+
+        self.assertFalse(
+            pe._acquire_pipeline_lock("PIPE-KHAC"),
+            "Không được cướp khóa của tiến trình đang chạy thật trong lúc huấn luyện",
+        )
+        still = json.loads(pe.LOCK_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(still["pipeline_id"], "PIPE-DANG-HUAN-LUYEN")
+
+    def test_stale_timeout_must_exceed_train_timeout(self):
+        self.assertGreater(
+            pe.STALE_LOCK_TIMEOUT, pe.TRAIN_TIMEOUT,
+            "Hạn coi khóa là rác phải dài hơn thời gian huấn luyện, nếu không sẽ tự cướp khóa của chính mình",
+        )
+
+    # Lỗi thật đã sửa: chỉ chặn 1 chiều (hệ cũ nhường pipeline), thiếu chiều ngược lại nên
+    # job đối chiếu cũ đang chạy mà bấm "Xử lý" là 2 tiến trình cùng dùng GPU + ghi chung cache.
+    def test_launch_refuses_while_old_backtest_job_is_running(self):
+        import os
+
+        (self.root / ".backtest.lock").write_text(
+            json.dumps({"job_id": "BT-1", "pid": os.getpid()}), encoding="utf-8"
+        )
+        result = pe.launch_pipeline_background("BATCH-X", 10, ["a.csv"])
+        self.assertFalse(result["started"])
+        self.assertEqual(result["reason"], "backtest_running")
+        self.assertFalse(pe.LOCK_FILE.exists(), "Bị từ chối thì không được để lại khóa mồ côi")
+
+    def test_launch_ignores_orphaned_backtest_lock(self):
+        # Khóa mồ côi (PID đã chết) thì không được chặn oan.
+        (self.root / ".backtest.lock").write_text(
+            json.dumps({"job_id": "BT-CU", "pid": 999999999}), encoding="utf-8"
+        )
+        self.assertFalse(pe._backtest_job_running())
+
     def test_pipeline_lock_allows_only_owner(self):
         self.assertTrue(pe._acquire_pipeline_lock("one"))
         self.assertFalse(pe._acquire_pipeline_lock("two"))
@@ -89,6 +136,27 @@ class PipelineEngineTests(unittest.TestCase):
         candidate = {h: 0.1 for h in pe.HORIZONS}
         self.assertFalse(pe._candidate_is_better(candidate, None))
         self.assertTrue(pe._candidate_is_better(candidate, {h: 0.2 for h in pe.HORIZONS}))
+
+    # Lỗi thật đã sửa: lịch sử huấn luyện tồn tại 2 định dạng trạng thái ("success" của bản mới
+    # và "Hoàn thành 100%" của bản cũ). Code chỉ so khớp đúng chuỗi "success" nên bỏ qua hết bản
+    # ghi cũ -> không có baseline -> candidate dù huấn luyện thành công cũng không bao giờ được
+    # áp dụng. Đây chính là lý do khâu "tối ưu" bế tắc trên máy thật.
+    def test_production_loss_accepts_legacy_vietnamese_status(self):
+        results = {f"GUMNet_h{h}": 0.2 + h / 1000 for h in pe.HORIZONS}
+        (pe.CKPT_DIR / "training_history.json").write_text(
+            json.dumps([{"status": "Hoàn thành 100%", "results": results}]), encoding="utf-8"
+        )
+        losses = pe._production_losses()
+        self.assertIsNotNone(losses, "Bản ghi định dạng cũ vẫn phải dùng được làm baseline")
+        self.assertEqual(losses[1], results["GUMNet_h1"])
+
+    def test_production_loss_rejects_failed_training_entry(self):
+        # Không được nhận nhầm phiên LỖI làm baseline (giữ nguyên tắc fail-closed).
+        results = {f"GUMNet_h{h}": 0.2 for h in pe.HORIZONS}
+        (pe.CKPT_DIR / "training_history.json").write_text(
+            json.dumps([{"status": "Lỗi: hết bộ nhớ", "results": results}]), encoding="utf-8"
+        )
+        self.assertIsNone(pe._production_losses())
 
     def test_production_loss_falls_back_to_training_history(self):
         results = {f"GUMNet_h{h}": 0.2 + h / 1000 for h in pe.HORIZONS}
@@ -178,6 +246,53 @@ class PipelineEngineTests(unittest.TestCase):
         self.assertEqual(status["status"], "failed")
         self.assertFalse(status["is_running"])
         self.assertFalse(pe.LOCK_FILE.exists())
+
+
+class PipelineSupervisorTests(unittest.TestCase):
+    """Watchdog là lớp bảo vệ CUỐI CÙNG: nó là thứ duy nhất báo được 'worker đã chết' khi
+    worker chết kiểu native. Nếu chính nó chết vì WinError 32 thì trạng thái kẹt vĩnh viễn."""
+
+    def setUp(self):
+        import pipeline_supervisor as ps
+        self.ps = ps
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.old_status = ps.STATUS_FILE
+        ps.STATUS_FILE = self.root / ".pipeline_status.json"
+
+    def tearDown(self):
+        self.ps.STATUS_FILE = self.old_status
+        self.temp.cleanup()
+
+    def test_write_status_recovers_from_transient_permission_error(self):
+        calls = {"n": 0}
+        real_replace = self.ps.os.replace
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("[WinError 32] gia lap xung dot file")
+            return real_replace(src, dst)
+
+        with mock.patch.object(self.ps.os, "replace", side_effect=flaky):
+            self.ps._write_status({"status": "failed", "is_running": False}, delay=0)
+
+        self.assertEqual(calls["n"], 3)
+        saved = json.loads(self.ps.STATUS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "failed")
+
+    def test_write_status_falls_back_to_direct_write_when_always_blocked(self):
+        def always_blocked(src, dst):
+            raise PermissionError("[WinError 32] luon bi chan")
+
+        with mock.patch.object(self.ps.os, "replace", side_effect=always_blocked):
+            # Không được ném lỗi ra ngoài: thà mất tính nguyên tử còn hơn mất hẳn trạng thái.
+            self.ps._write_status({"status": "failed", "is_running": False}, attempts=3, delay=0)
+
+        saved = json.loads(self.ps.STATUS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "failed")
+        self.assertFalse(self.ps.STATUS_FILE.with_suffix(".json.tmp").exists(),
+                         "Phải dọn file tạm sau khi ghi trực tiếp")
 
 
 if __name__ == "__main__":

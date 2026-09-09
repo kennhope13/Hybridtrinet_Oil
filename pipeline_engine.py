@@ -30,6 +30,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from project_io import load_checkpoint
+
 os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -52,6 +54,19 @@ MIN_NEW_ROWS = 5
 MIN_EVAL_PAIRS = 10
 MAPE_RETRAIN_THRESHOLD = 10.0  # %
 HORIZONS = [1, 5, 10, 15, 20, 30, 60]
+BACKTEST_MIN_DATE = datetime.datetime(2025, 9, 19)
+
+# Giới hạn thời gian huấn luyện candidate (giây).
+TRAIN_TIMEOUT = 1800
+
+# Sau bao lâu thì coi 1 khóa là RÁC và cướp lại, DÙ tiến trình giữ khóa vẫn đang sống.
+# BẮT BUỘC phải lớn hơn tổng thời gian 1 lượt chạy hợp lệ dài nhất:
+#   đối chiếu (~2-3 phút đo thực tế) + huấn luyện candidate (tối đa TRAIN_TIMEOUT)
+#   + thời gian kiểm tra/promote checkpoint.
+# Đặt quá thấp (600s như trước) khiến 1 lượt chạy đang huấn luyện thật bị lượt khác
+# cướp khóa giữa chừng -> 2 tiến trình cùng dùng GPU, cùng ghi 1 file trạng thái và
+# cùng đụng thư mục checkpoint.
+STALE_LOCK_TIMEOUT = TRAIN_TIMEOUT + 1200  # = 50 phút
 
 
 def _summarize_backtest(frame: Any) -> Dict[str, Any]:
@@ -127,8 +142,6 @@ def _acquire_pipeline_lock(pipeline_id: str) -> bool:
             current = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
             lock_pid = int(current.get("pid", 0))
             lock_pipe_id = current.get("pipeline_id")
-            lock_age = time.time() - float(current.get("created_at", 0))
-
             # 1. Cùng pipeline_id (do app đặt giữ chỗ trước khi spawn worker): tiếp quản lock
             if lock_pipe_id == pipeline_id:
                 _atomic_write_json(LOCK_FILE, {
@@ -138,8 +151,9 @@ def _acquire_pipeline_lock(pipeline_id: str) -> bool:
                 })
                 return True
 
-            # 2. Lock cũ của PID đã chết HOẶC quá 10 phút (stale lock timeout): giải phóng và lấy lại
-            if not _pid_alive(lock_pid) or lock_age > 600:
+            # Chỉ thu hồi lock khi PID thật sự đã chết. Không cướp lock của
+            # một lượt CPU finetune còn sống chỉ vì nó chạy lâu.
+            if not _pid_alive(lock_pid):
                 LOCK_FILE.unlink(missing_ok=True)
                 return _acquire_pipeline_lock(pipeline_id)
 
@@ -148,6 +162,23 @@ def _acquire_pipeline_lock(pipeline_id: str) -> bool:
         except Exception:
             LOCK_FILE.unlink(missing_ok=True)
             return _acquire_pipeline_lock(pipeline_id)
+
+
+def _backtest_job_running() -> bool:
+    """Hệ thống đối chiếu cũ (run_backtest_job.py) có đang thực sự chạy không.
+
+    Dùng chung file khóa .backtest.lock của nó. Chỉ tính là đang chạy khi PID trong
+    khóa còn sống — khóa mồ côi (tiến trình đã chết) thì bỏ qua, không chặn oan.
+    """
+    backtest_lock = ROOT / ".backtest.lock"
+    if not backtest_lock.exists():
+        return False
+    try:
+        info = json.loads(backtest_lock.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    pid = info.get("pid")
+    return bool(pid) and _pid_alive(int(pid))
 
 
 def _release_pipeline_lock(pipeline_id: str) -> None:
@@ -182,6 +213,28 @@ def _validate_candidate(candidate_dir: Path, job_id: str) -> Dict[int, float]:
     return losses
 
 
+def _is_successful_training_entry(entry: Dict[str, Any]) -> bool:
+    """Bản ghi huấn luyện này có phải là 1 phiên THÀNH CÔNG không.
+
+    Lịch sử huấn luyện tồn tại 2 định dạng trạng thái khác nhau do viết ở 2 thời kỳ:
+      - Bản mới (train_all_horizons.py hiện tại) ghi: "success"
+      - Bản cũ còn trong training_history.json ghi tiếng Việt: "Hoàn thành 100%"
+    Trước đây chỉ so khớp đúng chuỗi "success" nên MỌI bản ghi cũ đều bị bỏ qua ->
+    _production_losses() luôn trả None -> không có baseline -> candidate dù huấn luyện
+    thành công cũng KHÔNG BAO GIỜ được áp dụng (fail-closed).
+    """
+    status = str(entry.get("status", "")).strip().lower()
+    if not status:
+        return False
+    if status == "success":
+        return True
+    # Định dạng cũ: coi là thành công khi báo hoàn thành và KHÔNG có dấu hiệu lỗi/hủy.
+    failed_markers = ("fail", "error", "lỗi", "hủy", "huy", "cancel", "dừng", "dung")
+    if any(m in status for m in failed_markers):
+        return False
+    return "hoàn thành" in status or "hoan thanh" in status
+
+
 def _production_losses() -> Optional[Dict[int, float]]:
     losses: Dict[int, float] = {}
     try:
@@ -197,7 +250,7 @@ def _production_losses() -> Optional[Dict[int, float]]:
         try:
             history = json.loads((CKPT_DIR / "training_history.json").read_text(encoding="utf-8"))
             for entry in history:
-                if entry.get("status") != "success":
+                if not _is_successful_training_entry(entry):
                     continue
                 results = entry.get("results", {})
                 fallback = {}
@@ -284,7 +337,32 @@ def get_pipeline_status() -> Dict[str, Any]:
         # cũ ("running") ở mọi lượt sau, hiển thị "đang chạy" mãi dù tiến trình đã chết từ lâu.
         # Giờ ghi thẳng trạng thái thất bại (kèm sửa lại step_title/steps cho khớp) xuống đĩa
         # ngay khi phát hiện, để báo đúng và dứt khoát thay vì "treo" vô thời hạn.
-        pid = data.get("pid")
+        # The lightweight supervisor may be terminated independently while the
+        # actual pipeline worker continues (for example while it is waiting for
+        # the training subprocess). Prefer the real worker PID when available.
+        pid = data.get("worker_pid") or data.get("pid")
+        try:
+            tracked_process_alive = _pid_alive(int(pid or 0))
+        except (TypeError, ValueError):
+            tracked_process_alive = False
+
+        # Repair a false failure produced by an earlier supervisor-only PID
+        # check. Do this only for that exact synthetic interruption message;
+        # genuine worker errors remain failed.
+        if (
+            tracked_process_alive
+            and data.get("status") == "failed"
+            and str(data.get("error", "")).startswith("Tiến trình nền bị gián đoạn ngoài ý muốn")
+        ):
+            data["status"] = "running"
+            data["is_running"] = True
+            data["error"] = None
+            current_idx = int(data.get("step_index", 0) or 0)
+            steps = data.get("steps", [])
+            if 0 <= current_idx < len(steps):
+                steps[current_idx]["state"] = "running"
+            _atomic_write_json(STATUS_FILE, data)
+
         if data.get("is_running") and pid is not None:
             try:
                 pid_int = int(pid)
@@ -301,10 +379,10 @@ def get_pipeline_status() -> Dict[str, Any]:
                 except Exception:
                     pass
 
-            # 1. Quá hạn tối đa 15 phút (900s) không xong: Tự phục hồi an toàn (self-healing)
-            # 2. Hoặc đã khởi động qua grace period (>10s) và tiến trình PID đã thực sự biến mất
-            is_stale_timeout = age_sec > 900.0
-            is_pid_dead = (pid_int > 0 and age_sec > 10.0 and not _pid_alive(pid_int))
+            # Worker còn sống thì không được báo timeout giả. Tiến trình train
+            # con đã có timeout riêng; trạng thái chỉ thu hồi job quá hạn đã chết.
+            is_stale_timeout = age_sec > STALE_LOCK_TIMEOUT and not tracked_process_alive
+            is_pid_dead = (pid_int > 0 and age_sec > 10.0 and not tracked_process_alive)
 
             if is_stale_timeout or is_pid_dead:
                 data["is_running"] = False
@@ -390,8 +468,15 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
     pipeline_id = f"PIPE-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
     current = get_pipeline_status()
-    if current.get("is_running") and _pid_alive(int(current.get("pid") or 0)):
+    active_pid = current.get("worker_pid") or current.get("pid")
+    if current.get("is_running") and _pid_alive(int(active_pid or 0)):
         return {"started": False, "reason": "pipeline_running", "pipeline_id": current.get("pipeline_id")}
+    # Nhường hệ thống đối chiếu cũ (run_backtest_job.py) nếu nó đang thực sự chạy.
+    # app_main.py đã có chiều ngược lại (hệ cũ nhường pipeline), nhưng thiếu chiều này thì
+    # vẫn hở: job cũ tự khởi động khi mở app/đổi dữ liệu, người dùng bấm "Xử lý" ngay trong
+    # lúc đó là 2 tiến trình cùng chạy model trên GPU và cùng ghi đè simulation_cache.json.
+    if _backtest_job_running():
+        return {"started": False, "reason": "backtest_running", "pipeline_id": None}
     if not _acquire_pipeline_lock(pipeline_id):
         return {"started": False, "reason": "pipeline_locked", "pipeline_id": None}
 
@@ -421,7 +506,12 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
     if force_retrain:
         cmd.append("--force-retrain")
 
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", FOR_DISABLE_CONSOLE_CTRL_HANDLER="1")
+    env = dict(
+        os.environ,
+        PYTHONIOENCODING="utf-8",
+        FOR_DISABLE_CONSOLE_CTRL_HANDLER="1",
+        BACKTEST_DEVICE="cpu",
+    )
     flags = 0
     if os.name == "nt":
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -429,14 +519,19 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
     try:
         log_file = ROOT / "pipeline_worker.log"
         log_handle = open(log_file, "a", encoding="utf-8")
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(ROOT),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            creationflags=flags,
-            env=env,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=flags,
+                env=env,
+            )
+        finally:
+            # Popen has already duplicated/inherited the stream for the child.
+            # The Streamlit process must not retain one handle per pipeline run.
+            log_handle.close()
         # Ghi trạng thái khởi đầu sạch hoàn toàn (tránh rò rỉ bất kỳ giá trị cũ nào từ đợt trước)
         now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_state = {
@@ -455,6 +550,7 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
             "candidate_result": None,
             "error": None,
             "pid": proc.pid,
+            "worker_pid": proc.pid,
         }
         _atomic_write_json(STATUS_FILE, new_state)
         return {"started": True, "pipeline_id": pipeline_id, "pid": proc.pid}
@@ -482,7 +578,7 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
         update_pipeline_status(status="failed", is_running=False, error=err_msg, step_title="Kẹt khóa pipeline")
         return
 
-    update_pipeline_status(pid=my_pid, is_running=True, status="running", error=None)
+    update_pipeline_status(worker_pid=my_pid, is_running=True, status="running", error=None)
 
     try:
         # 1. BƯỚC 3: Chạy Backtest đối chiếu thực tế với dự báo cũ
@@ -506,13 +602,20 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
 
             # Xác định cửa sổ đánh giá 365 ngày theo ngày dữ liệu mới nhất.
             base_df = bw.load_df(bw.BUILTIN_CSV)
-            extra_dfs = [bw.load_df(f) for f in files]
+            file_frames = [(f, bw.load_df(f)) for f in files]
+            file_frames.sort(
+                key=lambda item: item[1]["Ngày"].max()
+                if item[1] is not None and not item[1].empty and "Ngày" in item[1].columns
+                else datetime.datetime.min
+            )
+            files = [item[0] for item in file_frames]
+            extra_dfs = [item[1] for item in file_frames]
             date_candidates = []
             for frame in [base_df] + extra_dfs:
                 if frame is not None and not frame.empty and "Ngày" in frame.columns:
                     date_candidates.append(frame["Ngày"].max())
             latest_date = max(date_candidates) if date_candidates else datetime.datetime.now()
-            start_date = latest_date - datetime.timedelta(days=365)
+            start_date = max(BACKTEST_MIN_DATE, latest_date - datetime.timedelta(days=365))
 
             def _worker_log(msg: str):
                 now_t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -636,21 +739,22 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
             "GUMNet",
             "--horizons",
             "1", "5", "10", "15", "20", "30", "60",
+            "--epochs",
+            "30",
             "--output_dir",
             str(candidate_out_dir),
         ]
 
         train_success = False
         try:
+            train_env = dict(os.environ, TRAIN_DEVICE="cpu", CUDA_VISIBLE_DEVICES="")
             proc_train = subprocess.run(
                 cmd_train,
                 cwd=str(ROOT),
-                stdout=subprocess.PIPE,
+                stdout=sys.stdout,
                 stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=600,
+                env=train_env,
+                timeout=TRAIN_TIMEOUT,
             )
             train_success = (proc_train.returncode == 0)
         except Exception as e:

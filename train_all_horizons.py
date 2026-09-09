@@ -670,7 +670,15 @@ if __name__ == "__main__":
 
     # 2. Thiết lập thiết bị và dữ liệu
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    requested_device = os.environ.get("TRAIN_DEVICE", "auto").strip().lower()
+    if requested_device == "cpu":
+        device = torch.device("cpu")
+    elif requested_device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("TRAIN_DEVICE=cuda nhưng CUDA không khả dụng")
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     flush_print(f"🖥️ Thiết bị sử dụng: {device}")
     
     df = read_data()

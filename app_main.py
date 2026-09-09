@@ -2,7 +2,7 @@
 Multi-Model Oil Price Forecast – Evaluation Hub (Robust Version)
 """
 
-import sys, json, importlib, warnings, os, logging, uuid, subprocess, re, time, hashlib
+import sys, json, importlib, warnings, os, logging, uuid, subprocess, re, time, hashlib, html
 
 # Tắt toàn bộ cảnh báo (scikit-learn version, streamlit deprecation, etc.) để Terminal luôn sạch đẹp
 warnings.filterwarnings("ignore")
@@ -852,6 +852,7 @@ CKPT_DIR = ROOT / "checkpoints_multi"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
 DATE_COL = "Ngày"
 HORIZONS = [1, 5, 10, 15, 20, 30, 60]
+BACKTEST_MIN_DATE = pd.Timestamp("2025-09-19")
 # CUTOFF_DATE (mốc bắt đầu tính backtest/đánh giá) được tính động ngay bên dưới, sau khi
 # đã đọc được dữ liệu thực tế — xem "CUTOFF_DATE = ..." gần phần load file_info.
 
@@ -1770,13 +1771,28 @@ def get_sorted_files(fp):
 file_info = get_sorted_files(fingerprint)
 file_paths = [Path(i["path"]) for i in file_info]
 
+# Use the complete accepted dataset when deciding whether an uploaded row is
+# new or modified. Comparing only with the built-in CSV causes an accepted
+# correction to be reported again on every subsequent upload.
+_existing_frames = [base_full_orig]
+for _existing_path in file_paths:
+    _existing_df = load_df(_existing_path)
+    if not _existing_df.empty and DATE_COL in _existing_df.columns:
+        _existing_frames.append(_existing_df)
+existing_records_full = (
+    pd.concat(_existing_frames, ignore_index=True)
+    .drop_duplicates(subset=[DATE_COL], keep="last")
+    .sort_values(DATE_COL)
+    .reset_index(drop=True)
+)
+
 # CUTOFF_DATE: chỉ lấy các điểm backtest trong 365 ngày gần nhất TÍNH THEO NGÀY MỚI NHẤT
 # đang có trong dữ liệu (dataset gốc + các file đã upload) — tự động trôi theo dữ liệu mới,
 # không còn là một ngày cố định phải nhớ sửa tay mỗi năm.
 _known_max_dates = [base_full_orig[DATE_COL].max()] + [i["max_date"] for i in file_info]
 _known_max_dates = [d for d in _known_max_dates if pd.notna(d)]
 _latest_known_date = max(_known_max_dates) if _known_max_dates else pd.Timestamp.now()
-CUTOFF_DATE = _latest_known_date - pd.Timedelta(days=365)
+CUTOFF_DATE = max(BACKTEST_MIN_DATE, _latest_known_date - pd.Timedelta(days=365))
 
 # Load cache
 cache_mismatch = False
@@ -1964,7 +1980,9 @@ def ensure_backtest_job_running(fp, models, files, cutoff_date, force=False):
         return
     spawn_backtest_job(fp, models, files, cutoff_date)
 
-ensure_backtest_job_running(fingerprint, sel_models, file_paths, CUTOFF_DATE)
+# The upload pipeline is the single automatic owner of backtest/cache updates.
+# Keep the legacy job helpers only for compatibility with old status files; do
+# not start a second model process on every Streamlit rerun.
 _bt_status = get_backtest_status()
 _backtest_running_now = _bt_status is not None and _bt_status.get("fingerprint") == fingerprint and _backtest_job_alive(_bt_status)
 _backtest_failed_current = _bt_status is not None and _bt_status.get("fingerprint") == fingerprint and _bt_status.get("status") == "failed"
@@ -1976,6 +1994,32 @@ if not combined.empty:
     df_view = combined[(combined["Model"].isin(sel_models)) & (combined[DATE_COL] >= CUTOFF_DATE)]
 else:
     df_view = pd.DataFrame()
+
+
+_LAUNCH_REFUSE_MESSAGES = {
+    "pipeline_running": "⏳ Một đợt xử lý khác đang chạy. Vui lòng đợi đợt đó xong rồi thử lại.",
+    "backtest_running": "⏳ Hệ thống đang chạy đối chiếu nền cho dữ liệu hiện tại. Đợi xong rồi thử lại để tránh 2 tiến trình tranh nhau.",
+    "pipeline_locked": "⏳ Hệ thống đang bận giữ khóa xử lý. Vui lòng thử lại sau giây lát.",
+    "start_failed": "❌ Không khởi động được tiến trình nền. Xem lại nhật ký hệ thống.",
+}
+
+
+def launch_pipeline_with_feedback(batch_id, new_rows, file_names, force_retrain=False):
+    """Khởi động pipeline và BÁO RÕ cho người dùng khi bị từ chối.
+
+    Trước đây các nút gọi launch_pipeline_background() rồi st.rerun() ngay mà không xem
+    kết quả — bị từ chối thì người dùng không thấy gì cả, tưởng bấm hụt. Chỉ rerun khi
+    thật sự khởi động được; bị từ chối thì giữ nguyên trang để đọc được thông báo.
+    """
+    result = pipeline_engine.launch_pipeline_background(
+        batch_id, new_rows, file_names, force_retrain=force_retrain
+    )
+    if result.get("started"):
+        st.rerun()
+    else:
+        reason = result.get("reason", "")
+        st.warning(_LAUNCH_REFUSE_MESSAGES.get(reason, f"Chưa khởi động được tiến trình nền ({reason})."))
+    return result
 
 
 # ==========================================
@@ -2027,7 +2071,8 @@ def render_global_pipeline_banner():
     border_left_color = "#16a34a" if st_val == "complete" else ("#e11d48" if st_val == "failed" else "#0d9488")
 
     if st_val == "failed":
-        tip_text = "⚠️ Tiến trình gặp sự cố hoặc bị gián đoạn. Bấm nút bên dưới để đóng và đặt lại ban đầu."
+        error_detail = html.escape(str(status_data.get("error") or "Tiến trình gặp sự cố hoặc bị gián đoạn."))
+        tip_text = f"⚠️ {error_detail} Bấm nút bên dưới để đóng và đặt lại ban đầu."
         tip_color = "#b91c1c"
         tip_bg = "#fee2e2"
     elif st_val == "complete":
@@ -2130,8 +2175,7 @@ def render_global_pipeline_banner():
                              type="secondary", use_container_width=True,
                              help="Kích hoạt quy trình tối ưu GUMNet Candidate ngầm ngay cả khi MAPE đang tốt"):
                     fps = [p.name for p in file_paths]
-                    pipeline_engine.launch_pipeline_background("FORCE-RETRAIN", 0, fps, force_retrain=True)
-                    st.rerun()
+                    launch_pipeline_with_feedback("FORCE-RETRAIN", 0, fps, force_retrain=True)
             with _col_dismiss:
                 if st.button("✕ Đóng thông báo", key="btn_dismiss_pipeline_banner", use_container_width=True):
                     pipeline_engine.reset_pipeline_status()
@@ -2153,20 +2197,6 @@ is_pipeline_busy = bool(render_global_pipeline_banner())
 # không hiện nội dung/menu bên dưới, không cho thao tác đi chỗ khác — chỉ hiện đúng 1 màn hình
 # tiến trình ở giữa, tự làm mới tới khi thật sự "Hoàn tất" (is_running mới chuyển False).
 if is_pipeline_busy:
-    st.markdown("""
-    <div style="max-width:560px; margin:60px auto; text-align:center; padding:36px 28px;
-                background:#ffffff; border:1px solid #e2e8f0; border-radius:16px;
-                box-shadow:0 4px 18px rgba(15,23,42,0.06);">
-        <div class="pulsing-dot" style="width:14px; height:14px; margin:0 auto 18px;"></div>
-        <div style="font-size:17px; font-weight:800; color:#0f172a; margin-bottom:8px;">
-            Hệ thống đang xử lý dữ liệu mới
-        </div>
-        <div style="font-size:13.5px; color:#64748b; line-height:1.6;">
-            Vui lòng đợi trong giây lát — trang sẽ tự động mở lại ngay khi xử lý xong,
-            không cần tải lại hay bấm gì thêm.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
     time.sleep(2)
     st.rerun()
 
@@ -2200,7 +2230,7 @@ if nav_choice == "◈  Dự báo":
         if ups:
             st.caption(f"📋 **Kiểm tra xem trước {len(ups)} file đã chọn (độc lập từng file):**")
             previews = data_pipeline.preview_uploaded_files(
-                ups, _latest_known_date, existing_records=base_full_orig
+                ups, _latest_known_date, existing_records=existing_records_full
             )
             all_valid_count = 0
             confirmed_overwrite_files = set()
@@ -2380,7 +2410,7 @@ if nav_choice == "◈  Dự báo":
             </div>
             <div style="border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:#f8fafc;">
                 <span style="color:#64748b; font-size:11px;">Trọng số Checkpoint</span><br>
-                <b style="font-size:14px; color:#087762;">Sẵn sàng (7/7 mốc)</b>
+                <b style="font-size:14px; color:#087762;">{'Sẵn sàng' if sum((CKPT_DIR / f'gumnet_h{h}.pt').exists() for h in HORIZONS) == len(HORIZONS) else 'Chưa đầy đủ'} ({sum((CKPT_DIR / f'gumnet_h{h}.pt').exists() for h in HORIZONS)}/{len(HORIZONS)} mốc)</b>
             </div>
         </div>
 
@@ -2402,7 +2432,7 @@ if nav_choice == "◈  Dự báo":
         
     st.markdown("---")
     
-    ckpts_exist = any((CKPT_DIR / f"gumnet_h{h}.pt").exists() for h in HORIZONS)
+    ckpts_exist = all((CKPT_DIR / f"gumnet_h{h}.pt").exists() for h in HORIZONS)
     if ckpts_exist:
         show_live_forecasts(base_full_orig, active_file_paths, sel_models, sel_hz_view)
     else:
@@ -2500,8 +2530,7 @@ elif nav_choice == "▦  Đánh giá mô hình":
         with _col_card_act:
             if st.button("⚡ Tối ưu mô hình ngay", key="btn_force_retrain_page2", disabled=bool(is_pipeline_busy), use_container_width=True):
                 fps = [p.name for p in file_paths]
-                pipeline_engine.launch_pipeline_background("MANUAL-PAGE2", 0, fps, force_retrain=True)
-                st.rerun()
+                launch_pipeline_with_feedback("MANUAL-PAGE2", 0, fps, force_retrain=True)
         
         col_t1, col_t2 = st.columns(2)
         h_order = [f"{h}d" for h in HORIZONS]
@@ -2577,8 +2606,9 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
             _btn_label2 = "🔁 Thử lại" if _backtest_failed_current else "🔄 Cập nhật (dự phòng)"
             if st.button(_btn_label2, key="btn_update_backtest_p3", use_container_width=True,
                          disabled=_backtest_running_now):
-                ensure_backtest_job_running(fingerprint, sel_models, file_paths, CUTOFF_DATE, force=True)
-                st.rerun()
+                launch_pipeline_with_feedback(
+                    "MANUAL-BACKTEST", 0, [p.name for p in file_paths], force_retrain=False
+                )
 
     st.markdown("#### 📂 Nhật ký các đợt nạp dữ liệu & trạng thái tự động hóa")
     ingest_hist = data_pipeline.get_ingestion_history()

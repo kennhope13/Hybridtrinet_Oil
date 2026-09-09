@@ -8,6 +8,7 @@ vốn nằm trong app_main.py — giữ nguyên logic tính toán, chỉ đổi:
 """
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -118,7 +119,10 @@ def load_model(name, horizon):
         return _MODEL_CACHE[key]
     try:
         conf = MODEL_DEFS[name]
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Backtest runs beside the Streamlit inference process.  Default it to
+        # CPU so loading seven checkpoints cannot compete with the UI for VRAM.
+        requested_device = os.environ.get("BACKTEST_DEVICE", "cpu").strip().lower()
+        device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
         _swap_src(conf["proj_dir"])
         mod = importlib.import_module(conf["mod"])
         importlib.reload(mod)
@@ -278,7 +282,7 @@ def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None
                             except Exception:
                                 pass
                         gc.collect()
-                        if torch.cuda.is_available():
+                        if os.environ.get("BACKTEST_DEVICE", "cpu").strip().lower() == "cuda" and torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
                         history_df = pd.concat([base_enriched, new_rows.iloc[:idx_in_new]], ignore_index=True)
