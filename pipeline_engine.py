@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from project_io import load_checkpoint
+from project_io import load_checkpoint, dataset_fingerprint, process_alive
 
 os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -93,8 +93,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
         p = int(pid)
         if p <= 0:
             return False
-        os.kill(p, 0)
-        return True
+        return process_alive(p)
     except PermissionError:
         return True
     except OSError:
@@ -179,6 +178,16 @@ def _backtest_job_running() -> bool:
         return False
     pid = info.get("pid")
     return bool(pid) and _pid_alive(int(pid))
+
+
+def pipeline_lock_active():
+    try:
+        info = json.loads(LOCK_FILE.read_text(encoding='utf-8'))
+        return _pid_alive(int(info.get('pid', 0)))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, TypeError):
+        return True
 
 
 def _release_pipeline_lock(pipeline_id: str) -> None:
@@ -274,6 +283,32 @@ def _candidate_is_better(candidate: Dict[int, float], production: Optional[Dict[
     candidate_avg = sum(candidate.values()) / len(candidate)
     production_avg = sum(production.values()) / len(production)
     return candidate_avg < production_avg
+
+
+def already_trained(fingerprint):
+    try:
+        record = json.loads((ROOT / '.last_training.json').read_text(encoding='utf-8'))
+        return record.get('fingerprint') == fingerprint
+    except (OSError, ValueError):
+        return False
+
+
+def _compare_backtests(before, after):
+    keys = ['Model', 'Horizon', 'Upload', 'Ngày', 'Target', 'Thực tế']
+    if before.empty or after.empty:
+        raise ValueError('Không đủ dữ liệu để so sánh mô hình')
+    left = before.sort_values(keys).reset_index(drop=True)
+    right = after.sort_values(keys).reset_index(drop=True)
+    if not left[keys].equals(right[keys]):
+        raise ValueError('Hai mô hình không có cùng điểm đối chiếu')
+    old, new = _summarize_backtest(left), _summarize_backtest(right)
+    return {
+        'before_mape': old['mape'], 'after_mape': new['mape'],
+        'before_mae': old['mae'], 'after_mae': new['mae'],
+        'mape_delta': new['mape'] - old['mape'],
+        'mae_delta': new['mae'] - old['mae'],
+        'improved': new['mape'] < old['mape'], 'sample_count': new['total_pts'],
+    }
 
 
 def _promote_with_rollback(candidate_dir: Path, backup_dir: Path) -> None:
@@ -471,6 +506,8 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
     pipeline_id = f"PIPE-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
     current = get_pipeline_status()
+    if force_retrain and already_trained(dataset_fingerprint(ROOT / 'datasets', HORIZONS)):
+        return {'started': False, 'reason': 'already_trained'}
     active_pid = current.get("worker_pid") or current.get("pid")
     if current.get("is_running") and _pid_alive(int(active_pid or 0)):
         return {"started": False, "reason": "pipeline_running", "pipeline_id": current.get("pipeline_id")}
@@ -607,8 +644,7 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
             # Quét lại file và tính toán
             data_dir = ROOT / "datasets"
             files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"] and not f.name.startswith("~$")]
-            hz_str = "_".join(str(x) for x in HORIZONS)
-            fingerprint = f"{len(files)}_{max(f.stat().st_mtime for f in files) if files else 0}_{hz_str}"
+            fingerprint = dataset_fingerprint(data_dir, HORIZONS)
 
             # Xác định cửa sổ đánh giá 365 ngày theo ngày dữ liệu mới nhất.
             base_df = bw.load_df(bw.BUILTIN_CSV)
@@ -677,7 +713,9 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
         retrain_needed = False
         decision_reason = ""
 
-        if force_retrain:
+        if already_trained(fingerprint):
+            decision_reason = 'Dữ liệu này đã được huấn luyện và đánh giá; giữ kết quả hiện tại.'
+        elif force_retrain:
             retrain_needed = True
             decision_reason = f"Kích hoạt tối ưu GUMNet thủ công theo yêu cầu (MAPE hiện tại: {mape:.2f}%)."
         elif new_rows < MIN_NEW_ROWS:
@@ -704,7 +742,7 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
             set_pipeline_step(
                 4,
                 "Hoàn tất",
-                f"Dữ liệu đã cập nhật ({samples} điểm đối chiếu). GUMNet hiện tại đạt MAPE {mape:.2f}% (dưới ngưỡng 10%) nên tiếp tục được giữ làm mô hình chuẩn.",
+                f"Đã cập nhật {samples} điểm đối chiếu. {decision_reason}",
                 "done",
             )
             update_pipeline_status(status="complete", is_running=False)
@@ -722,8 +760,6 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
         candidate_job_id = f"CAND-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
         candidate_out_dir = CANDIDATE_DIR / candidate_job_id
         candidate_out_dir.mkdir(parents=True, exist_ok=True)
-
-        production_losses = _production_losses()
 
         backup_job_dir = BACKUP_DIR / candidate_job_id
         backup_job_dir.mkdir(parents=True, exist_ok=True)
@@ -753,7 +789,11 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
             "30",
             "--output_dir",
             str(candidate_out_dir),
+            '--data-path',
+            str(candidate_out_dir / 'training_data.csv'),
+            '--update_data',
         ]
+        shutil.copy2(bw.BUILTIN_CSV, candidate_out_dir / 'training_data.csv')
 
         train_success = False
         try:
@@ -773,19 +813,31 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
 
         candidate_promoted = False
         candidate_msg = ""
+        comparison = None
+        evaluation_complete = False
 
         if train_success:
             try:
-                candidate_losses = _validate_candidate(candidate_out_dir, candidate_job_id)
-                if _candidate_is_better(candidate_losses, production_losses):
+                _validate_candidate(candidate_out_dir, candidate_job_id)
+                set_pipeline_step(3, 'Đang đánh giá candidate',
+                                  'Đang so sánh MAPE/MAE trên cùng dữ liệu đối chiếu.', 'running')
+                after_frame = bw.run_upload_simulation(
+                    bw.BUILTIN_CSV, files, start_date,
+                    sel_horizons=HORIZONS, sel_models=['GUMNet'],
+                    log_fn=_worker_log, checkpoint_dir=candidate_out_dir,
+                )
+                comparison = _compare_backtests(comb, after_frame)
+                if dataset_fingerprint(data_dir, HORIZONS) != fingerprint:
+                    raise ValueError('Dữ liệu đã thay đổi trong lúc huấn luyện; cần đánh giá lại')
+                evaluation_complete = True
+                if comparison['improved']:
                     _promote_with_rollback(candidate_out_dir, backup_job_dir)
                     candidate_promoted = True
-                    candidate_msg = "GUMNet Candidate đã được xác thực, tốt hơn Production và đã được áp dụng."
-                elif production_losses is None:
-                    candidate_msg = "Không có chỉ số baseline Production đáng tin cậy; giữ nguyên model hiện tại để an toàn."
+                    candidate_msg = 'Finetune hoàn tất. Candidate có MAPE thấp hơn trên tập đối chiếu và đã được áp dụng.'
                 else:
-                    candidate_msg = "Candidate không tốt hơn GUMNet Production trên cùng tiêu chí; giữ nguyên model hiện tại."
+                    candidate_msg = 'Finetune hoàn tất. MAPE không giảm trên tập đối chiếu; giữ nguyên mô hình hiện tại.'
             except Exception as exc:
+                evaluation_complete = False
                 candidate_msg = f"Candidate không vượt qua kiểm tra ({exc}). Giữ nguyên Production hiện tại."
         else:
             candidate_msg = "Tối ưu candidate không thành công. GUMNet Production hiện tại tiếp tục hoạt động an toàn."
@@ -795,6 +847,7 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
                 "promoted": candidate_promoted,
                 "details": candidate_msg,
                 "candidate_job_id": candidate_job_id,
+                "comparison": comparison,
             }
         )
 
@@ -818,6 +871,9 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
                     log_fn=_worker_log,
                 )
                 after_stats = _summarize_backtest(after_frame)
+                verification = _compare_backtests(comb, after_frame)
+                if not verification['improved'] or abs(verification['after_mape'] - comparison['after_mape']) > 1e-8:
+                    raise ValueError('Checkpoint sau áp dụng không khớp kết quả candidate')
                 write_cache(ROOT / "simulation_cache.json", fingerprint, after_frame)
                 before_mape = float(mape)
                 before_mae = float(backtest_result.get("mae", 0.0))
@@ -853,13 +909,37 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
                     f"MAE: {after_mae:.2f} USD (trước {before_mae:.2f} USD)."
                 )
             except Exception as exc:
-                candidate_msg += f" Chưa thể đánh giá lại sau Finetune: {exc}."
+                # Restore weights before publishing any failure to the UI.
+                for horizon in HORIZONS:
+                    target = CKPT_DIR / f'gumnet_h{horizon}.pt'
+                    tmp = target.with_suffix('.rollback.tmp')
+                    shutil.copy2(backup_job_dir / target.name, tmp)
+                    _replace_with_retry(tmp, target)
+                write_cache(ROOT / 'simulation_cache.json', fingerprint, comb)
+                candidate_promoted = False
+                evaluation_complete = False
+                candidate_msg = f'Đánh giá sau áp dụng gặp lỗi ({exc}); đã khôi phục mô hình và kết quả trước huấn luyện.'
                 update_pipeline_status(candidate_result={
-                    "promoted": True,
+                    "promoted": False,
                     "details": candidate_msg,
                     "candidate_job_id": candidate_job_id,
                     "post_finetune_error": str(exc),
                 })
+
+        if evaluation_complete:
+            _atomic_write_json(ROOT / '.last_training.json', {
+                'fingerprint': fingerprint, 'candidate_job_id': candidate_job_id,
+                'promoted': candidate_promoted, 'comparison': comparison,
+            })
+            if comparison and not candidate_promoted:
+                candidate_msg += (f" MAPE hiện tại: {comparison['before_mape']:.2f}%; "
+                                  f"candidate: {comparison['after_mape']:.2f}%. "
+                                  f"MAE hiện tại: {comparison['before_mae']:.2f}; "
+                                  f"candidate: {comparison['after_mae']:.2f}.")
+        else:
+            set_pipeline_step(3, 'Tối ưu chưa hoàn tất', candidate_msg, 'failed')
+            update_pipeline_status(status='failed', is_running=False, error=candidate_msg)
+            return
 
         # Hoàn tất
         set_pipeline_step(

@@ -15,4 +15,5 @@ ingestion_history.json
 checkpoints_backup/
 checkpoints_candidate/
 .training.lock
+.last_training.json
 .claude/

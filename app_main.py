@@ -23,7 +23,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import torch
 
-from project_io import load_checkpoint, read_cache, write_cache, save_upload
+from project_io import load_checkpoint, read_cache, write_cache, save_upload, dataset_fingerprint, process_alive
 import data_pipeline
 import pipeline_engine
 
@@ -1042,8 +1042,16 @@ def _swap_src(proj_dir):
     sys.path.insert(0, d)
     for m in [k for k in list(sys.modules) if k.startswith("src")]: del sys.modules[m]
 
-@st.cache_resource
 def load_model(name, horizon):
+    prefix = 'gumnet' if name == 'GUMNet' else 'hybrid'
+    path = ROOT / 'checkpoints_multi' / f'{prefix}_h{horizon}.pt'
+    stamp = path.stat() if path.exists() else None
+    version = (stamp.st_mtime_ns, stamp.st_ctime_ns, stamp.st_size) if stamp else None
+    return _load_model_version(name, horizon, version)
+
+
+@st.cache_resource(max_entries=14)
+def _load_model_version(name, horizon, version):
     """Nạp mô hình chuyên biệt cho từng mốc (đọc đúng cấu trúc file thực tế)."""
     try:
         conf = MODEL_DEFS[name]
@@ -1630,8 +1638,7 @@ TRAIN_LOCK_FILE = ROOT / ".training.lock"
 
 def _pid_alive(pid):
     try:
-        os.kill(pid, 0)
-        return True
+        return process_alive(pid)
     except PermissionError:
         return True  # Tiến trình tồn tại nhưng khác quyền truy cập
     except OSError:
@@ -1817,9 +1824,7 @@ def _process_log_line(line, hz_status, current_hz, hz_completed, total_hz):
 def get_dir_fingerprint():
     data_dir = ROOT / "datasets"
     files = [f for f in data_dir.glob("*") if f.suffix.lower() in [".xlsx", ".xls", ".csv"] and not f.name.startswith("~$")]
-    hz_str = "_".join(str(x) for x in HORIZONS)
-    if not files: return f"empty_{hz_str}"
-    return f"{len(files)}_{max(f.stat().st_mtime for f in files)}_{hz_str}"
+    return dataset_fingerprint(data_dir, HORIZONS)
 
 fingerprint = get_dir_fingerprint()
 
@@ -2034,14 +2039,14 @@ def ensure_backtest_job_running(fp, models, files, cutoff_date, force=False):
     # cùng chạy model trên chung 1 GPU — nếu cả 2 cùng chạy một lúc sẽ tranh nhau và có thể ghi
     # đè kết quả của nhau. Trong lúc pipeline mới đang chạy thật, hệ thống cũ tạm nhường, không
     # tự tạo job riêng — tránh chạy chồng chéo lãng phí và tranh chấp file/GPU.
-    if pipeline_engine.get_pipeline_status().get("is_running") or (ROOT / ".pipeline.lock").exists():
+    if pipeline_engine.get_pipeline_status().get("is_running") or pipeline_engine.pipeline_lock_active():
         return
     status = get_backtest_status()
     alive = _backtest_job_alive(status)
     if not force:
         if status and status.get("fingerprint") == fp and alive:
             return  # đúng job cho đúng dữ liệu này đang chạy rồi -> không tạo trùng
-        if status and status.get("fingerprint") == fp and status.get("status") == "success":
+        if status and status.get("fingerprint") == fp and status.get("status") == "success" and CACHE_FILE.exists() and not cache_mismatch and not combined.empty:
             return  # đã có kết quả đúng dữ liệu này rồi -> khỏi chạy lại
     if alive and status.get("fingerprint") != fp:
         # Có job KHÁC (dữ liệu cũ hơn) đang chạy dở — để nó chạy nốt, KHÔNG chen ngang (chỉ 1
@@ -2068,6 +2073,7 @@ else:
 
 
 _LAUNCH_REFUSE_MESSAGES = {
+    'already_trained': 'Dữ liệu này đã được huấn luyện và đánh giá. Hãy cập nhật dữ liệu mới trước lượt tối ưu tiếp theo.',
     "pipeline_running": "⏳ Một đợt xử lý khác đang chạy. Vui lòng đợi đợt đó xong rồi thử lại.",
     "backtest_running": "⏳ Hệ thống đang chạy đối chiếu nền cho dữ liệu hiện tại. Đợi xong rồi thử lại để tránh 2 tiến trình tranh nhau.",
     "pipeline_locked": "⏳ Hệ thống đang bận giữ khóa xử lý. Vui lòng thử lại sau giây lát.",
@@ -2237,7 +2243,8 @@ def render_global_pipeline_banner():
     # Nút đóng hoặc đặt lại trạng thái khi tiến trình không còn chạy thật
     if (st_val in ("failed", "complete") or not is_running) and st_val != "idle":
         retrain_dec = status_data.get("retrain_decision") or {}
-        can_manual_retrain = (st_val == "complete" and not retrain_dec.get("needed", False))
+        can_manual_retrain = (st_val == "complete" and not retrain_dec.get("needed", False)
+                              and not pipeline_engine.already_trained(fingerprint))
 
         if can_manual_retrain:
             _col_space, _col_retrain, _col_dismiss = st.columns([2.2, 1.4, 1.2])
@@ -2536,7 +2543,7 @@ elif nav_choice == "▦  Đánh giá mô hình":
         with st.expander("🔍 Chi tiết kỹ thuật", expanded=False):
             st.code(str(_bt_status.get("error")), language="text")
     elif _backtest_stale:
-        st.warning("⚠️ Có dữ liệu mới chưa được tính vào kết quả đối chiếu bên dưới — hệ thống sẽ tự cập nhật trong giây lát.")
+        pass
     elif df_view.empty:
         st.info("ℹ️ Chưa có kết quả đối chiếu nào — hệ thống sẽ tự tính khi có dữ liệu.")
 
@@ -2599,7 +2606,9 @@ elif nav_choice == "▦  Đánh giá mô hình":
         with _col_card_desc:
             st.caption("⚙️ **Chủ động tối ưu**: Hệ thống tự động huấn luyện khi MAPE > 10%. Nếu muốn ép máy tối ưu ngay mô hình mới với dữ liệu hiện tại, bạn có thể bấm nút bên cạnh.")
         with _col_card_act:
-            if st.button("⚡ Tối ưu mô hình ngay", key="btn_force_retrain_page2", disabled=bool(is_pipeline_busy), use_container_width=True):
+            if pipeline_engine.already_trained(fingerprint):
+                st.caption('Dữ liệu hiện tại đã được huấn luyện và đánh giá. Có thể tối ưu tiếp khi dữ liệu thay đổi.')
+            elif st.button("⚡ Tối ưu mô hình ngay", key="btn_force_retrain_page2", disabled=bool(is_pipeline_busy), use_container_width=True):
                 fps = [p.name for p in file_paths]
                 launch_pipeline_with_feedback("MANUAL-PAGE2", 0, fps, force_retrain=True)
         
@@ -2672,7 +2681,7 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
             elif _backtest_failed_current:
                 st.error("❌ Lần cập nhật gần nhất bị lỗi. Bảng đang hiển thị (nếu có) là kết quả cũ.")
             else:
-                st.warning("⚠️ Có dữ liệu mới chưa được tính vào bảng đối chiếu bên dưới — hệ thống sẽ tự cập nhật trong giây lát.")
+                st.empty()
         with _col_upd_r2:
             _btn_label2 = "🔁 Thử lại" if _backtest_failed_current else "🔄 Cập nhật (dự phòng)"
             if st.button(_btn_label2, key="btn_update_backtest_p3", use_container_width=True,

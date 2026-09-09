@@ -1,6 +1,7 @@
 """Restricted checkpoint loading and atomic application data storage."""
 
 import io
+import hashlib
 import json
 import os
 import time
@@ -11,6 +12,55 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+
+def dataset_fingerprint(directory, horizons):
+    digest = hashlib.sha256()
+    files = sorted(p for p in Path(directory).glob('*')
+                   if p.suffix.lower() in {'.csv', '.xls', '.xlsx'}
+                   and not p.name.startswith('~$'))
+    for path in files:
+        digest.update(path.name.encode('utf-8'))
+        digest.update(b'\0')
+        with path.open('rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        digest.update(b'\0')
+    digest.update(str(tuple(horizons)).encode('ascii'))
+    return digest.hexdigest()
+
+
+def process_alive(pid):
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only
+        if not handle:
+            return ctypes.get_last_error() != 87  # Invalid PID; access denied stays busy.
+        try:
+            return kernel.WaitForSingleObject(handle, 0) != 0
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 def load_checkpoint(path, map_location="cpu"):

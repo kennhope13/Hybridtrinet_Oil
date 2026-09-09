@@ -42,8 +42,12 @@ def load_env(tmp_root, alive_pids=frozenset(), popen_mock=None, pipeline_running
         # pipeline_engine thật chạy nền hoàn toàn tách biệt (subprocess riêng) — chỉ cần giả lập
         # đúng mặt cắt ensure_backtest_job_running() thực sự dùng: is_running True/False.
         "pipeline_engine": SimpleNamespace(
-            get_pipeline_status=lambda: {"is_running": pipeline_running}
+            get_pipeline_status=lambda: {"is_running": pipeline_running},
+            pipeline_lock_active=lambda: False,
         ),
+        'CACHE_FILE': tmp_root / 'simulation_cache.json',
+        'cache_mismatch': False,
+        'combined': SimpleNamespace(empty=False),
     }
     module = ast.Module(body=nodes, type_ignores=[])
     exec(compile(module, "app_main.py", "exec"), env)
@@ -152,9 +156,16 @@ class BacktestJobTests(unittest.TestCase):
 
     # 5. Job trùng fingerprint đã SUCCESS -> không tạo job mới
     def test_duplicate_fingerprint_already_success_no_new_job(self):
+        (self.root / 'simulation_cache.json').write_text('{}')
         self._write_status(job_id="job-3", fingerprint="fp-3", status="success", started_at="t", finished_at="t2", error=None)
         self.env["ensure_backtest_job_running"]("fp-3", ["GUMNet"], ["a.csv"], SimpleNamespace(strftime=lambda f: "x"))
         self.fake_popen.assert_not_called()
+
+    def test_success_without_cache_rebuilds(self):
+        self._write_status(job_id='old', fingerprint='fp', status='success')
+        self.env['ensure_backtest_job_running']('fp', ['GUMNet'], ['a.csv'],
+                                               SimpleNamespace(strftime=lambda _: '2026-01-01'))
+        self.fake_popen.assert_called_once()
 
     # 6. DỮ LIỆU ĐỔI GIỮA LÚC JOB CŨ CHẠY: job cũ (fp-old) đang chạy -> không chen ngang. Sau khi
     #    job cũ xong (không còn alive), lượt gọi tiếp theo với fp MỚI phải tự spawn job kế tiếp.

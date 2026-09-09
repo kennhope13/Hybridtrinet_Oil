@@ -113,8 +113,13 @@ def _swap_src(proj_dir):
         del sys.modules[m]
 
 
-def load_model(name, horizon):
-    key = (name, horizon)
+def load_model(name, horizon, checkpoint_dir=None):
+    checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir is not None else CKPT_DIR
+    prefix = 'gumnet' if name == 'GUMNet' else 'hybrid'
+    checkpoint_path = checkpoint_dir / f'{prefix}_h{horizon}.pt'
+    stamp = checkpoint_path.stat() if checkpoint_path.exists() else None
+    key = (name, horizon, str(checkpoint_dir.resolve()),
+           (stamp.st_mtime_ns, stamp.st_ctime_ns, stamp.st_size) if stamp else None)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
     try:
@@ -129,7 +134,7 @@ def load_model(name, horizon):
         cls = getattr(mod, conf["cls"])
 
         if name == "GUMNet":
-            ckpt_path = CKPT_DIR / f"gumnet_h{horizon}.pt"
+            ckpt_path = checkpoint_path
             if not ckpt_path.exists():
                 return None, None, device
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -225,7 +230,7 @@ def predict_from_df(model, meta, df, device):
     return result
 
 
-def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None, sel_models=None, log_fn=None):
+def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None, sel_models=None, log_fn=None, checkpoint_dir=None):
     log_fn = log_fn or (lambda msg: print(msg, flush=True))
     if sel_horizons is None or len(sel_horizons) == 0:
         sel_horizons = HORIZONS
@@ -291,7 +296,7 @@ def run_upload_simulation(base_path, upload_files, start_date, sel_horizons=None
                             continue
 
                         for h in sorted(sel_horizons):
-                            model_h, meta_h, device_h = load_model(mname, h)
+                            model_h, meta_h, device_h = load_model(mname, h, checkpoint_dir)
                             if not model_h:
                                 continue
                             _swap_src(MODEL_DEFS[mname]["proj_dir"])

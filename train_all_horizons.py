@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from project_io import load_checkpoint
+from project_io import load_checkpoint, process_alive
 from torch.utils.data import DataLoader
 
 def safe_torch_save(obj, path, retries=6, delay=1.5):
@@ -49,8 +49,7 @@ TRAIN_LOCK_FILE = ROOT / ".training.lock"
 
 def _pid_alive(pid):
     try:
-        os.kill(pid, 0)
-        return True
+        return process_alive(pid)
     except PermissionError:
         return True  # Tiến trình tồn tại nhưng khác quyền truy cập
     except OSError:
@@ -147,6 +146,22 @@ def release_own_lock(job_id):
 
 DATE_COL = "Ngày"
 TARGET_COLS = ["MG95", "MG92", "DO 0.001%", "DO 0.05%"]
+
+
+def normalize_data_columns(df):
+    """Map harmless header whitespace/aliases to the canonical training schema."""
+    aliases = {
+        "ngay": DATE_COL.lower(), "date": DATE_COL.lower(),
+        "mg95": "MG95", "mg92": "MG92",
+        "do0.001%": "DO 0.001%", "do 0.05%": "DO 0.05%",
+        "do0.05%": "DO 0.05%",
+    }
+    renamed = {}
+    for col in df.columns:
+        cleaned = str(col).replace('\ufeff', '').strip()
+        key = cleaned.lower().replace(' ', '')
+        renamed[col] = aliases.get(key, cleaned)
+    return df.rename(columns=renamed)
 MASTER_HORIZON = 60  # Mốc dài nhất
 HORIZONS = [1, 5, 10, 15, 20, 30, 60]
 
@@ -157,6 +172,7 @@ GUMNET_SEQ_LEN = 30
 GUMNET_EPOCHS  = 150
 GUMNET_LR      = 2e-4  # Giảm LR để Finetune ổn định hơn
 GUMNET_BATCH   = 32
+EARLY_STOP_PATIENCE = 5
 
 HYBRID_SEQ_LEN = 64
 HYBRID_EPOCHS  = 200
@@ -182,6 +198,7 @@ def parse_args():
     parser.add_argument("--horizons", nargs="+", type=int, default=HORIZONS, help="Danh sách chân trời")
     parser.add_argument("--force_retrain", action="store_true", help="Huấn luyện lại từ đầu (bảo toàn checkpoint cũ đến khi kiểm tra thành công)")
     parser.add_argument("--output_dir", type=str, default=None, help="Thư mục xuất checkpoint (dành cho candidate cô lập)")
+    parser.add_argument('--data-path', type=str, default=None, help='Candidate training data copy')
     return parser.parse_args()
 
 
@@ -192,7 +209,7 @@ def update_training_data(specific_file=None):
         raise FileNotFoundError(f"Không tìm thấy tập dữ liệu gốc tại: {DATA_PATH}")
 
     try:
-        base_df = pd.read_csv(DATA_PATH)
+        base_df = normalize_data_columns(pd.read_csv(DATA_PATH))
     except Exception as e:
         raise RuntimeError(f"Không thể đọc file dữ liệu gốc {DATA_PATH.name}: {e}")
 
@@ -233,6 +250,7 @@ def update_training_data(specific_file=None):
                 df = pd.read_csv(f)
             else:
                 df = pd.read_excel(f)
+            df = normalize_data_columns(df)
         except Exception as e:
             raise ValueError(f"Lỗi đọc file {f.name}: {e}")
 
@@ -301,7 +319,7 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 def read_data():
-    df = pd.read_csv(DATA_PATH)
+    df = normalize_data_columns(pd.read_csv(DATA_PATH))
     df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
     df = df.dropna(subset=[DATE_COL]).sort_values(DATE_COL).reset_index(drop=True)
     for c in df.columns:
@@ -370,7 +388,7 @@ def train_gumnet_horizon(df, horizon, device, epochs=None, force_retrain=False, 
         return loss / len(quantiles)
 
     best_val = float("inf")
-    patience = 15
+    patience = EARLY_STOP_PATIENCE
     wait = 0
 
     for epoch in range(n_epochs):
@@ -549,7 +567,7 @@ def train_hybrid_horizon(df, horizon, device, epochs=None, force_retrain=False, 
 
     best_val = float("inf")
     best_state = None
-    patience, bad = 15, 0
+    patience, bad = EARLY_STOP_PATIENCE, 0
 
     for epoch in range(n_epochs):
         model.train()
@@ -656,6 +674,8 @@ def train_hybrid_horizon(df, horizon, device, epochs=None, force_retrain=False, 
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.data_path:
+        DATA_PATH = Path(args.data_path)
     if args.output_dir:
         OUT_DIR = Path(args.output_dir)
         OUT_DIR.mkdir(parents=True, exist_ok=True)

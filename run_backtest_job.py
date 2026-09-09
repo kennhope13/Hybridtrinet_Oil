@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 import backtest_worker as bw  # noqa: E402
-from project_io import write_cache  # noqa: E402
+from project_io import write_cache, process_alive  # noqa: E402
 
 LOCK_FILE = ROOT / ".backtest.lock"
 STATUS_FILE = ROOT / ".backtest_job.json"
@@ -39,8 +39,7 @@ CACHE_FILE = ROOT / "simulation_cache.json"
 
 def _pid_alive(pid):
     try:
-        os.kill(pid, 0)
-        return True
+        return process_alive(pid)
     except PermissionError:
         return True
     except OSError:
