@@ -395,12 +395,17 @@ def inject_oil_tour_engine(current_page=""):
                     selector: '.hub-notice, [data-testid="stColumn"]:nth-child(2), [data-testid="column"]:nth-child(2)'
                 },
                 {
-                    title: "3. Xem bảng giá dự báo & Biểu đồ xu hướng",
-                    text: "Bảng hiển thị giá dự kiến (USD/thùng hoặc USD/tấn) cho 4 mặt hàng. Rê chuột vào biểu đồ để xem giá từng ngày, bấm tên mốc ở chú giải bên phải để ẩn/hiện đường.",
-                    selector: '[data-testid="stDataFrame"], [data-testid="stPlotlyChart"], .table-wrap'
+                    title: "3. Xem bảng giá dự báo",
+                    text: "Bảng hiển thị giá dự kiến theo 7 mốc cho các mặt hàng đang có dữ liệu, với đơn vị tương ứng trên giao diện.",
+                    selector: '[data-testid="stDataFrame"], .table-wrap'
                 },
                 {
-                    title: "4. Xuất file báo cáo & Chuyển bước",
+                    title: "4. Đọc biểu đồ so sánh các mốc",
+                    text: "Rê chuột lên điểm dữ liệu để xem giá, hoặc bấm tên mốc trong chú giải để ẩn và hiện từng đường dự báo.",
+                    selector: '[data-testid="stPlotlyChart"], .stPlotlyChart'
+                },
+                {
+                    title: "5. Xuất file báo cáo & Chuyển bước",
                     text: "Bấm nút 'Xuất Bảng Dự Báo' để tải file Excel/CSV gửi lãnh đạo, hoặc chuyển sang menu 'Đánh giá mô hình' để kiểm tra sai số thực tế.",
                     selector: '[data-testid="stDownloadButton"], [data-testid="stSidebar"], .stDownloadButton'
                 }
@@ -412,20 +417,57 @@ def inject_oil_tour_engine(current_page=""):
                     selector: '[data-testid="stHorizontalBlock"], [data-testid="column"], [data-testid="stMetric"]'
                 },
                 {
-                    title: "2. Phân tích chi tiết theo Mốc, Mặt hàng & Xu hướng",
-                    text: "Bảng nhiệt bên dưới phân rã sai số theo từng mốc thời gian và từng loại dầu. Biểu đồ đường cho thấy xu hướng sai số tăng tự nhiên ở các mốc tương lai xa (+60 ngày).",
-                    selector: '[data-testid="stPlotlyChart"], [data-testid="stDataFrame"]'
+                    title: "2. MAPE theo mốc dự báo",
+                    text: "Bảng này giúp so sánh phần trăm sai lệch ở từng mốc từ 1 đến 60 ngày.",
+                    selector: '[id="mape-theo-moc-du-bao"]',
+                    groupTargets: [{selector: '[id="mape-theo-moc-du-bao"]'}, {selector: '[data-testid="stDataFrame"]', index: 0}]
+                },
+                {
+                    title: "3. MAPE theo mặt hàng",
+                    text: "Xem mặt hàng nào đang có sai số tương đối cao hoặc thấp hơn trong tập dữ liệu đánh giá.",
+                    selector: '[id="mape-theo-mat-hang"]',
+                    groupTargets: [{selector: '[id="mape-theo-mat-hang"]'}, {selector: '[data-testid="stDataFrame"]', index: 1}]
+                },
+                {
+                    title: "4. Chi tiết sai lệch tuyệt đối MAE",
+                    text: "MAE thể hiện độ lệch trung bình theo đơn vị giá. Nên đọc cùng MAPE và số lượng mẫu đánh giá.",
+                    selector: '[id="chi-tiet-sai-lech-gia-tuyet-doi-mae"]',
+                    groupTargets: [{selector: '[id="chi-tiet-sai-lech-gia-tuyet-doi-mae"]'}, {selector: '[data-testid="stDataFrame"]', index: 2}]
+                },
+                {
+                    title: "5. Xem xu hướng sai số",
+                    text: "Biểu đồ cho thấy sai số thay đổi giữa các mốc dự báo để hỗ trợ nhận biết mốc cần theo dõi thêm.",
+                    selector: '[data-testid="stPlotlyChart"], .stPlotlyChart'
+                },
+                {
+                    title: "6. Tối ưu mô hình khi cần",
+                    text: "Nút này dùng để yêu cầu Finetune thủ công. Chỉ nên dùng khi muốn đánh giá lại model với dữ liệu hiện tại; hệ thống sẽ khóa nút khi một tiến trình đang chạy.",
+                    selector: '[data-testid="stButton"] button, [data-testid="stButton"]'
                 }
             ],
             history: [
                 {
-                    title: "1. Tra cứu danh mục các đợt nạp dữ liệu",
-                    text: "Bảng lưu trữ toàn bộ các tệp Excel/CSV đã nạp vào hệ thống qua từng đợt, phục vụ công tác thanh tra, kiểm toán bất cứ lúc nào.",
-                    selector: '[data-testid="stDataFrame"], [data-testid="stSelectbox"]'
+                    title: "1. Xem và xuất nhật ký các đợt nạp",
+                    text: "Bảng trên liệt kê các đợt nạp dữ liệu. Nút xuất ngay bên dưới tải báo cáo tổng hợp lịch sử nạp file.",
+                    selector: '[data-testid="stDataFrame"]',
+                    groupTargets: [{selector: '[data-testid="stDataFrame"]', index: 0}, {selector: '[data-testid="stDownloadButton"]', index: 0}]
                 },
                 {
-                    title: "2. Đối chiếu chi tiết Thực tế vs Dự báo & Xuất file",
-                    text: "Chọn đợt nạp để xem bảng đối chiếu và tải file CSV. Biểu đồ so sánh trực quan giữa đường giá thị trường thực tế (xanh ngọc) và giá AI dự báo (tím nét đứt).",
+                    title: "2. Xem và xuất chi tiết một đợt",
+                    text: "Chọn một đợt, xem bảng Thực tế và Dự báo, rồi dùng nút xuất bên cạnh để tải dữ liệu của riêng đợt đang chọn.",
+                    selector: '[data-testid="stSelectbox"]',
+                    groupTargets: [{selector: '[data-testid="stSelectbox"]', index: 0}, {selector: '[data-testid="stDownloadButton"]', index: 1}, {selector: '[data-testid="stDataFrame"]', index: 1}]
+                }
+            ],
+            charts: [
+                {
+                    title: "1. Chọn dữ liệu cần quan sát",
+                    text: "Dùng các bộ lọc trên trang Biểu đồ để chọn mặt hàng, khoảng dữ liệu hoặc nội dung cần so sánh.",
+                    selector: '[data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stDateInput"]'
+                },
+                {
+                    title: "2. Đọc và tương tác với biểu đồ",
+                    text: "Rê chuột lên điểm dữ liệu để xem giá trị, dùng thanh công cụ để phóng to, thu nhỏ hoặc tải hình biểu đồ.",
                     selector: '[data-testid="stPlotlyChart"], .stPlotlyChart'
                 }
             ]
@@ -466,10 +508,40 @@ def inject_oil_tour_engine(current_page=""):
             return null;
         }
 
-        function waitForTargetElement(selector, callback, maxTries = 30, interval = 120) {
+        function pickGroupedTarget(targetSpecs) {
+            const scope = doc.querySelector('[data-testid="stMain"]')
+                || doc.querySelector('section.main')
+                || doc.querySelector('.main')
+                || doc;
+            const elements = [];
+            for (const spec of (targetSpecs || [])) {
+                try {
+                    const matches = scope.querySelectorAll(spec.selector);
+                    const el = matches[spec.index || 0];
+                    if (el && el.getBoundingClientRect().height > 0) elements.push(el);
+                } catch (e) { /* bỏ qua selector không hợp lệ */ }
+            }
+            if (!elements.length) return null;
+            return {
+                _oilElements: elements,
+                getBoundingClientRect: function() {
+                    const rects = elements.map(el => el.getBoundingClientRect());
+                    const left = Math.min(...rects.map(r => r.left));
+                    const top = Math.min(...rects.map(r => r.top));
+                    const right = Math.max(...rects.map(r => r.right));
+                    const bottom = Math.max(...rects.map(r => r.bottom));
+                    return {left, top, right, bottom, width: right - left, height: bottom - top};
+                },
+                scrollIntoView: function(options) { elements[0].scrollIntoView(options); }
+            };
+        }
+
+        function waitForTargetElement(step, callback, maxTries = 30, interval = 120) {
             let tries = 0;
             function check() {
-                const el = pickBestElement(selector);
+                const el = step.groupTargets
+                    ? pickGroupedTarget(step.groupTargets)
+                    : pickBestElement(step.selector);
                 if (el) {
                     callback(el);
                 } else if (++tries < maxTries) {
@@ -565,15 +637,15 @@ def inject_oil_tour_engine(current_page=""):
         }
 
         function showStep(idx) {
-            const prev = doc.querySelector('.oil-tour-focus');
-            if (prev) {
+            const previousTargets = doc.querySelectorAll('.oil-tour-focus');
+            previousTargets.forEach(function(prev) {
                 prev.classList.remove('oil-tour-focus');
                 prev.style.removeProperty('outline-width');
                 prev.style.removeProperty('outline-style');
                 prev.style.removeProperty('outline-color');
                 prev.style.removeProperty('outline-offset');
                 prev.style.removeProperty('box-shadow');
-            }
+            });
 
             if (idx >= activeTour.length) {
                 endTour();
@@ -587,12 +659,10 @@ def inject_oil_tour_engine(current_page=""):
             doc.getElementById('oil-tour-count').textContent = `Bước ${idx + 1} / ${activeTour.length}`;
             doc.getElementById('oil-tour-next').textContent = (idx === activeTour.length - 1) ? 'Hoàn tất ✓' : 'Tiếp theo ➔';
 
-            waitForTargetElement(step.selector, function(targetEl) {
+            waitForTargetElement(step, function(targetEl) {
                 if (targetEl) {
-                    targetEl.classList.add('oil-tour-focus');
-                    if (document.activeElement === targetEl && typeof targetEl.blur === 'function') {
-                        targetEl.blur();
-                    }
+                    const focusTargets = targetEl._oilElements || [targetEl];
+                    focusTargets.forEach(el => el.classList.add('oil-tour-focus'));
                     targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     positionDialogAndArrow(targetEl);
                     setTimeout(() => positionDialogAndArrow(targetEl), 150);
@@ -604,15 +674,15 @@ def inject_oil_tour_engine(current_page=""):
         }
 
         function endTour() {
-            const prev = doc.querySelector('.oil-tour-focus');
-            if (prev) {
+            const previousTargets = doc.querySelectorAll('.oil-tour-focus');
+            previousTargets.forEach(function(prev) {
                 prev.classList.remove('oil-tour-focus');
                 prev.style.removeProperty('outline-width');
                 prev.style.removeProperty('outline-style');
                 prev.style.removeProperty('outline-color');
                 prev.style.removeProperty('outline-offset');
                 prev.style.removeProperty('box-shadow');
-            }
+            });
             const spotlight = doc.getElementById('oil-spotlight-el');
             if (spotlight) spotlight.style.display = 'none';
             const layer = doc.getElementById('oil-tour-layer');
@@ -664,6 +734,7 @@ def inject_oil_tour_engine(current_page=""):
                 forecast: "Dự báo",
                 metrics: "Đánh giá",
                 history: "Lịch sử",
+                charts: "Biểu đồ",
                 guide: "Hướng dẫn"
             };
             const keyword = pageKeywords[tourKey] || "Dự báo";
@@ -2739,6 +2810,20 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">HƯỚNG DẪN VẬN HÀNH</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Hướng Dẫn Sử Dụng &amp; Vận Hành Hệ Thống</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Quy chuẩn dữ liệu đầu vào, cách đọc chỉ số sai số và cơ chế tự động hóa GUMNet ngầm.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:14px 16px; margin-bottom:20px;">
+        <div style="font-size:14px; font-weight:700; color:#0f172a; margin-bottom:4px;">Hướng dẫn tương tác</div>
+        <div style="font-size:12.5px; color:#64748b; margin-bottom:12px;">Chọn nội dung để hệ thống chuyển đến đúng trang và chỉ dẫn từng thao tác.</div>
+        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+            <button data-oil-tour="forecast" style="border:1px solid #99f6e4; background:#ecfdf5; color:#087762; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600;">Dự báo</button>
+            <button data-oil-tour="metrics" style="border:1px solid #bfdbfe; background:#eff6ff; color:#1d4ed8; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600;">Đánh giá mô hình</button>
+            <button data-oil-tour="history" style="border:1px solid #ddd6fe; background:#f5f3ff; color:#6d28d9; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600;">Lịch sử &amp; xuất dữ liệu</button>
+            <button data-oil-tour="charts" style="border:1px solid #fed7aa; background:#fff7ed; color:#c2410c; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600;">Biểu đồ</button>
+            <button id="oil-replay-btn" style="border:1px solid #cbd5e1; background:#ffffff; color:#334155; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600;">Xem lại từ đầu</button>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
