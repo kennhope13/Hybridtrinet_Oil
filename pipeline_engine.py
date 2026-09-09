@@ -397,6 +397,9 @@ def get_pipeline_status() -> Dict[str, Any]:
                         _atomic_write_json(STATUS_FILE, data)
                     except Exception:
                         pass
+                # Worker đã chết thì lock của chính pipeline đó không còn người giữ.
+                # Dọn ngay để lượt xử lý tiếp theo không bị chặn bởi trạng thái mồ côi.
+                _release_pipeline_lock(data.get("pipeline_id"))
         return data
     except Exception:
         return default_state
@@ -514,7 +517,12 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
     )
     flags = 0
     if os.name == "nt":
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        # Tách worker khỏi console/process-group của Streamlit. CREATE_NO_WINDOW
+        # một mình vẫn để worker phụ thuộc vào vòng đời console trên Windows.
+        flags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        )
 
     try:
         log_file = ROOT / "pipeline_worker.log"
@@ -525,6 +533,8 @@ def launch_pipeline_background(batch_id: str, new_rows: int, file_names: List[st
                 cwd=str(ROOT),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
                 creationflags=flags,
                 env=env,
             )
@@ -787,6 +797,69 @@ def run_pipeline_task(pipeline_id: str, batch_id: str, new_rows: int, force_retr
                 "candidate_job_id": candidate_job_id,
             }
         )
+
+        # Candidate đã được promote thì phải đo lại trên cùng tập dữ liệu. Nếu không,
+        # MAPE/MAE trên giao diện vẫn là kết quả của Production cũ và người dùng không
+        # thể biết việc finetune có cải thiện thực tế hay không.
+        if candidate_promoted:
+            try:
+                set_pipeline_step(
+                    3,
+                    "Đang đánh giá lại sau Finetune",
+                    "Đang chạy lại backtest bằng GUMNet mới để xác nhận MAPE/MAE...",
+                    "running",
+                )
+                after_frame = bw.run_upload_simulation(
+                    bw.BUILTIN_CSV,
+                    files,
+                    start_date,
+                    sel_horizons=HORIZONS,
+                    sel_models=["GUMNet"],
+                    log_fn=_worker_log,
+                )
+                after_stats = _summarize_backtest(after_frame)
+                write_cache(ROOT / "simulation_cache.json", fingerprint, after_frame)
+                before_mape = float(mape)
+                before_mae = float(backtest_result.get("mae", 0.0))
+                after_mape = float(after_stats["mape"])
+                after_mae = float(after_stats["mae"])
+                comparison = {
+                    "before_mape": round(before_mape, 2),
+                    "after_mape": round(after_mape, 2),
+                    "mape_delta": round(after_mape - before_mape, 2),
+                    "before_mae": round(before_mae, 2),
+                    "after_mae": round(after_mae, 2),
+                    "mae_delta": round(after_mae - before_mae, 2),
+                    "improved": after_mape < before_mape,
+                    "sample_count": int(after_stats["total_pts"]),
+                }
+                backtest_result = {
+                    "fingerprint": fingerprint,
+                    "mape": round(after_mape, 2),
+                    "mae": round(after_mae, 2),
+                    "sample_count": int(after_stats["total_pts"]),
+                    "calculated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "before_finetune": {"mape": round(before_mape, 2), "mae": round(before_mae, 2)},
+                    "after_finetune": {"mape": round(after_mape, 2), "mae": round(after_mae, 2)},
+                }
+                update_pipeline_status(backtest_result=backtest_result, candidate_result={
+                    "promoted": True,
+                    "details": candidate_msg,
+                    "candidate_job_id": candidate_job_id,
+                    "comparison": comparison,
+                })
+                candidate_msg += (
+                    f" MAPE sau Finetune: {after_mape:.2f}% (trước {before_mape:.2f}%), "
+                    f"MAE: {after_mae:.2f} USD (trước {before_mae:.2f} USD)."
+                )
+            except Exception as exc:
+                candidate_msg += f" Chưa thể đánh giá lại sau Finetune: {exc}."
+                update_pipeline_status(candidate_result={
+                    "promoted": True,
+                    "details": candidate_msg,
+                    "candidate_job_id": candidate_job_id,
+                    "post_finetune_error": str(exc),
+                })
 
         # Hoàn tất
         set_pipeline_step(

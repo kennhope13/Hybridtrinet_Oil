@@ -2752,7 +2752,7 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
             • <b>Định dạng hỗ trợ:</b> <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>.<br>
             • <b>Cột thời gian:</b> Cần có cột <code>Ngày</code> (hoặc <code>Date</code>, <code>ngay</code>).<br>
             • <b>Các cột giá mục tiêu:</b> <code>MG95</code>, <code>MG92</code> (USD/thùng), <code>DO 0.001%</code>, <code>DO 0.05%</code> (USD/tấn). Có thể có 1 hoặc nhiều cột.<br>
-            • <b>Kiểu dữ liệu:</b> Số thực dương, không chứa công thức macro hay giá trị âm.<br>
+            • <b>Kiểu dữ liệu:</b> Nên dùng số thực dương và file không có macro; giá trị âm không được hỗ trợ.<br>
             • <b>Dữ liệu độc lập:</b> Hệ thống kiểm tra từng file riêng biệt. File lỗi sẽ bị từ chối mà không làm ảnh hưởng đến các file hợp lệ khác.
         </div>
         """, unsafe_allow_html=True)
@@ -2780,7 +2780,7 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
 
     # 2. Quy trình vận hành 4 bước khép kín
     st.markdown("""
-    #### 🔄 Quy Trình Tự Động Hóa Khép Kín Phía Sau (Zero-Touch)
+    #### 🔄 Quy Trình Tự Động Hóa Phía Sau
     <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:10px 0 24px;">
         <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:14px; text-align:center;">
             <div style="font-size:24px; margin-bottom:4px;">📥</div>
@@ -2875,7 +2875,7 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <div class="guide-card">
             <b style="color:#0f172a; font-size:14px;">1. Bao lâu nên nạp file dữ liệu mới một lần?</b>
             <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
-                Khuyến nghị nạp định kỳ <b>1–2 tuần/lần</b> hoặc ngay khi vừa kết thúc kỳ điều hành giá xăng dầu để hệ thống luôn có mốc dự báo tươi mới nhất.
+                Khuyến nghị nạp định kỳ <b>1–2 tuần/lần</b> hoặc sau kỳ điều hành giá xăng dầu để duy trì mốc dữ liệu mới.
             </p>
         </div>
         <div style="height:10px;"></div>
@@ -2891,7 +2891,7 @@ elif nav_choice == "❓  Hướng dẫn sử dụng":
         <div class="guide-card">
             <b style="color:#0f172a; font-size:14px;">3. Khi hệ thống đang tự tối ưu mô hình, tôi có xem dự báo được không?</b>
             <p style="color:#64748b; font-size:13px; margin:4px 0 0;">
-                Có. Quá trình tối ưu candidate chạy nền; trong điều kiện hệ thống hoạt động bình thường, GUMNet Production hiện tại vẫn được dùng để xem và xuất dự báo.
+                Trong lúc tối ưu candidate, màn hình có thể tạm khóa để bảo vệ dữ liệu. Sau khi xử lý hoàn tất, bạn có thể xem và xuất dự báo bằng GUMNet Production hoặc model mới nếu candidate được áp dụng.
             </p>
         </div>
         <div style="height:10px;"></div>
