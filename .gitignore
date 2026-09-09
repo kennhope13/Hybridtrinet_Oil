@@ -12,3 +12,7 @@ simulation_cache.json
 ingestion_history.json
 *.tmp
 *.backup_*
+checkpoints_backup/
+checkpoints_candidate/
+.training.lock
+.claude/
