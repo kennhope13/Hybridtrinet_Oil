@@ -1,5 +1,163 @@
 [
   {
+    "session_id": "TR-20261007-120227",
+    "job_id": "5195ac7b5437",
+    "timestamp": "07/10/2026 12:02:27",
+    "mode": "Finetune (Cập nhật)",
+    "models": [
+      "GUMNet"
+    ],
+    "device": "CUDA",
+    "device_name": "NVIDIA GeForce RTX 5060 Ti",
+    "epochs": 20,
+    "horizons": [
+      "1d"
+    ],
+    "data_info": {
+      "total_rows": 4660,
+      "date_range": "01/05/2008 ➔ 25/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "25/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ]
+    },
+    "results": {
+      "GUMNet_h1": 0.011514,
+      "h1": 0.011514
+    },
+    "avg_val_loss": 0.011514,
+    "status": "success"
+  },
+  {
+    "session_id": "TR-20261007-115606",
+    "job_id": "988aef4f0b5b",
+    "timestamp": "07/10/2026 11:56:06",
+    "mode": "Finetune (Cập nhật)",
+    "models": [
+      "GUMNet"
+    ],
+    "device": "CUDA",
+    "device_name": "NVIDIA GeForce RTX 5060 Ti",
+    "epochs": 20,
+    "horizons": [
+      "1d"
+    ],
+    "data_info": {
+      "total_rows": 4660,
+      "date_range": "01/05/2008 ➔ 25/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "25/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ]
+    },
+    "results": {
+      "GUMNet_h1": 0.01152,
+      "h1": 0.01152
+    },
+    "avg_val_loss": 0.01152,
+    "status": "success"
+  },
+  {
+    "session_id": "TR-20261007-115543",
+    "job_id": "e9e363030182",
+    "timestamp": "07/10/2026 11:55:43",
+    "mode": "Finetune (Cập nhật)",
+    "models": [
+      "GUMNet"
+    ],
+    "device": "CUDA",
+    "device_name": "NVIDIA GeForce RTX 5060 Ti",
+    "epochs": 20,
+    "horizons": [
+      "1d"
+    ],
+    "data_info": {
+      "total_rows": 4660,
+      "date_range": "01/05/2008 ➔ 25/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "25/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ]
+    },
+    "results": {
+      "GUMNet_h1": 0.011548,
+      "h1": 0.011548
+    },
+    "avg_val_loss": 0.011548,
+    "status": "success"
+  },
+  {
+    "session_id": "TR-20261007-115510",
+    "job_id": "8cb516c422f6",
+    "timestamp": "07/10/2026 11:55:10",
+    "mode": "Train lại từ đầu",
+    "models": [
+      "GUMNet",
+      "HybridTriNet"
+    ],
+    "device": "CUDA",
+    "device_name": "NVIDIA GeForce RTX 5060 Ti",
+    "epochs": 150,
+    "horizons": [
+      "1d",
+      "5d",
+      "10d",
+      "15d",
+      "20d",
+      "30d",
+      "60d"
+    ],
+    "data_info": {
+      "total_rows": 4660,
+      "date_range": "01/05/2008 ➔ 25/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "25/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ]
+    },
+    "results": {
+      "GUMNet_h1": 0.011541,
+      "h1": 0.011541,
+      "HybridTriNet_h1": 0.017255,
+      "GUMNet_h5": 0.013483,
+      "h5": 0.013483,
+      "HybridTriNet_h5": 0.035233,
+      "GUMNet_h10": 0.014538,
+      "h10": 0.014538,
+      "HybridTriNet_h10": 0.066555,
+      "GUMNet_h15": 0.015498,
+      "h15": 0.015498,
+      "HybridTriNet_h15": 0.085979,
+      "GUMNet_h20": 0.016077,
+      "h20": 0.016077,
+      "HybridTriNet_h20": 0.115955,
+      "GUMNet_h30": 0.0176,
+      "h30": 0.0176,
+      "HybridTriNet_h30": 0.130938,
+      "GUMNet_h60": 0.019594,
+      "h60": 0.019594,
+      "HybridTriNet_h60": 0.186955
+    },
+    "avg_val_loss": 0.053372,
+    "status": "success"
+  },
+  {
     "session_id": "TR-20260907-164500",
     "timestamp": "07/09/2026 16:45:00",
     "mode": "Finetune (Cập nhật dữ liệu mới)",

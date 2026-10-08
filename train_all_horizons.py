@@ -329,6 +329,85 @@ def read_data():
     df[num_cols] = df[num_cols].interpolate().bfill().ffill()
     return df
 
+
+def compute_regression_metrics(y_true, y_pred):
+    """Tính MAE, MAPE, RMSE cho dự án dự báo giá dầu."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    if y_true.shape != y_pred.shape:
+        raise ValueError(f"y_true và y_pred khác shape: {y_true.shape} != {y_pred.shape}")
+    if y_true.size == 0:
+        raise ValueError("Không có mẫu nào để tính metric đánh giá.")
+
+    abs_err = np.abs(y_true - y_pred)
+    mae = float(np.mean(abs_err))
+    denom = np.maximum(np.abs(y_true), 1e-8)
+    mape = float(np.mean(np.abs((y_true - y_pred) / denom)) * 100.0)
+    rmse = float(np.sqrt(np.mean(np.square(y_true - y_pred))))
+    return {
+        "mae": mae,
+        "mape": mape,
+        "rmse": rmse,
+    }
+
+
+def evaluate_holdout_metrics(df, horizon, device, model_name, checkpoint_path):
+    """Đánh giá trên holdout test set riêng để xác định độ tin cậy của model trên dữ liệu mới."""
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy checkpoint để đánh giá: {checkpoint_path}")
+
+    if model_name == "HybridTriNet":
+        return {"mae": None, "mape": None, "rmse": None, "reason": "hybrid_not_implemented_yet"}
+
+    if model_name == "GUMNet":
+        gumnet_dir = str(ROOT / "oil_forecast_research_new-main")
+        sys.path = [p for p in sys.path if p != gumnet_dir]
+        sys.path.insert(0, gumnet_dir)
+        for m in [k for k in list(sys.modules) if k.startswith("src")]:
+            del sys.modules[m]
+        from src.model.dataset import DataProcessor
+        from src.model.model import GUMNet
+
+        feature_cols = [c for c in df.columns if c != DATE_COL]
+        processor = DataProcessor(seq_len=GUMNET_SEQ_LEN, horizon=horizon)
+        X, y = processor.prepare_data(df, TARGET_COLS, feature_cols, is_train=True)
+        if len(X) < 5:
+            return {"mae": None, "mape": None, "rmse": None, "reason": "not_enough_data"}
+
+        test_start = int(len(X) * 0.8)
+        X_test = X[test_start:]
+        y_test = y[test_start:]
+        dataset = torch.utils.data.TensorDataset(torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.float32))
+        loader = DataLoader(dataset, batch_size=GUMNET_BATCH)
+
+        model = GUMNet(seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols), output_dim=len(TARGET_COLS), horizon=horizon,
+                       d_feat=64, num_quantiles=3).to(device)
+        ckpt = load_checkpoint(checkpoint_path, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
+
+        pred_list = []
+        true_list = []
+        with torch.no_grad():
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                pred, _ = model(xb)
+                pred = pred[:, :, :, 1]
+                pred_list.append(pred.detach().cpu().numpy())
+                true_list.append(yb.detach().cpu().numpy())
+
+        y_hat = np.concatenate(pred_list, axis=0) if pred_list else np.empty((0,))
+        y_true = np.concatenate(true_list, axis=0) if true_list else np.empty((0,))
+        y_hat_inv = processor.inverse_transform_targets(y_hat.reshape(-1, len(TARGET_COLS))).reshape(y_hat.shape)
+        y_true_inv = processor.inverse_transform_targets(y_true.reshape(-1, len(TARGET_COLS))).reshape(y_true.shape)
+        flat_true = y_true_inv.reshape(-1)
+        flat_pred = y_hat_inv.reshape(-1)
+        metrics = compute_regression_metrics(flat_true, flat_pred)
+        return metrics
+
+    raise ValueError(f"Model không được hỗ trợ đánh giá holdout: {model_name}")
+
+
 # ═══════════════════════  GUMNet TRAINING  ════════════════════════════════════
 
 def train_gumnet_horizon(df, horizon, device, epochs=None, force_retrain=False, job_id="job"):
@@ -719,12 +798,12 @@ if __name__ == "__main__":
         if "GUMNet" in args.models:
             flush_print(f"🧠 [GUMNet] Horizon {hz}d...")
             v_loss = train_gumnet_horizon(df, hz, device, epochs=args.epochs, force_retrain=args.force_retrain, job_id=job_id)
-            # Trước đây nếu v_loss là None (SKIP do không đủ dữ liệu), job vẫn lặng lẽ bỏ qua mốc
-            # này rồi tiếp tục — cuối cùng vẫn in "TẤT CẢ ĐÃ CẬP NHẬT" dù thiếu hẳn 1 mốc, khiến
-            # giao diện báo thành công sai. Giờ 1 mốc/model bị SKIP = toàn bộ job thất bại ngay.
             if v_loss is None:
                 flush_print(f"❌ Mốc {hz} ngày (GUMNet) bị bỏ qua (không đủ dữ liệu) — dừng toàn bộ job, không báo thành công khi thiếu kết quả.")
                 sys.exit(1)
+            ckpt_path = OUT_DIR / f"gumnet_h{hz}.pt"
+            test_metrics = evaluate_holdout_metrics(df, hz, device, "GUMNet", ckpt_path)
+            flush_print(f"    Test metrics (GUMNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f}")
             results[f"GUMNet_h{hz}"] = round(float(v_loss), 6)
             results[f"h{hz}"] = round(float(v_loss), 6)
             all_val_losses.append(float(v_loss))
@@ -735,6 +814,15 @@ if __name__ == "__main__":
             if v_loss is None:
                 flush_print(f"❌ Mốc {hz} ngày (HybridTriNet) bị bỏ qua (thiếu cột dữ liệu) — dừng toàn bộ job, không báo thành công khi thiếu kết quả.")
                 sys.exit(1)
+            ckpt_path = OUT_DIR / f"hybrid_h{hz}.pt"
+            try:
+                test_metrics = evaluate_holdout_metrics(df, hz, device, "HybridTriNet", ckpt_path)
+                if test_metrics.get("mae") is not None:
+                    flush_print(f"    Test metrics (HybridTriNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f}")
+                else:
+                    flush_print(f"    ⚠️ HybridTriNet h{hz} chưa có evaluator holdout đầy đủ; đang dùng validation loss để theo dõi.")
+            except Exception as exc:
+                flush_print(f"    ⚠️ Không đánh giá test cho HybridTriNet h{hz} được: {exc}")
             results[f"HybridTriNet_h{hz}"] = round(float(v_loss), 6)
             all_val_losses.append(float(v_loss))
             if f"h{hz}" not in results:

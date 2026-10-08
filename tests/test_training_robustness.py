@@ -148,6 +148,17 @@ class TrainingRobustnessTests(unittest.TestCase):
         finally:
             tah.DATA_PATH = orig_data_path
 
+    def test_compute_regression_metrics(self):
+        """Kiểm tra metric MAE/MAPE/RMSE cho tập test đánh giá mô hình."""
+        y_true = np.array([100.0, 100.0, 100.0])
+        y_pred = np.array([80.0, 80.0, 80.0])
+
+        metrics = tah.compute_regression_metrics(y_true, y_pred)
+
+        self.assertAlmostEqual(metrics["mae"], 20.0, places=6)
+        self.assertAlmostEqual(metrics["mape"], 20.0, places=6)
+        self.assertAlmostEqual(metrics["rmse"], 20.0, places=6)
+
     def test_checkpoint_protection_on_validation_failure(self):
         """Kiểm tra khi xác thực checkpoint thất bại thì checkpoint cũ được bảo toàn 100%."""
         orig_out_dir = tah.OUT_DIR

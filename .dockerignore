@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.git/
+.gitignore
+.venv/
+venv/
+.vscode/
+.ipynb_checkpoints/
+checkpoints_multi/*.tmp
+checkpoints_multi/*.lock
+checkpoints_multi/*.json.tmp
+.DS_Store

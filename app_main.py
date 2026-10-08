@@ -28,8 +28,8 @@ import data_pipeline
 import pipeline_engine
 
 st.set_page_config(
-    page_title="Oil Forecast – Automated Evaluation Hub",
-    page_icon="🛢️",
+    page_title="Oil Forecast – Operations",
+    page_icon="�",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -55,47 +55,47 @@ st.markdown("""
     /* Sidebar sáng, chữ đậm: tránh nền navy làm menu và trạng thái khó đọc. */
     [data-testid="stSidebar"],
     [data-testid="stSidebar"] > div:first-child {
-        background: #f7f9fc !important;
-        border-right: 1px solid #d9e2ef !important;
+        background: #ffffff !important;
+        border-right: 1px solid #e5e7eb !important;
     }
-    [data-testid="stSidebar"] * { color: #26364d !important; }
+    [data-testid="stSidebar"] * { color: #1f2937 !important; }
     [data-testid="stSidebar"] [role="radiogroup"] label,
     [data-testid="stSidebar"] button {
         background: transparent !important;
-        color: #334155 !important;
+        color: #374151 !important;
         border-radius: 8px !important;
     }
     [data-testid="stSidebar"] [role="radiogroup"] label:hover,
     [data-testid="stSidebar"] button:hover {
-        background: #eaf5f4 !important;
-        color: #075f57 !important;
+        background: #f3f4f6 !important;
+        color: #111827 !important;
     }
     [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-        background: #dff5f1 !important;
-        color: #075f57 !important;
+        background: #f8fafc !important;
+        color: #111827 !important;
         font-weight: 700 !important;
-        box-shadow: inset 4px 0 0 #00ad91 !important;
+        box-shadow: inset 4px 0 0 #111827 !important;
     }
     [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) * {
-        color: #075f57 !important;
+        color: #111827 !important;
     }
     [data-testid="stSidebar"] [role="radiogroup"] label > div:first-child {
         display: none !important;
     }
-    [data-testid="stSidebar"] hr { border-color: #d9e2ef !important; }
+    [data-testid="stSidebar"] hr { border-color: #e5e7eb !important; }
 /* 1. Reset font và tổng thể nền */
 html, body, [class*="css"] {
     font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f7fb !important;
 }
 
-/* 3. Thanh Tiến Trình (Progress Bar) chuẩn Hi-Tech Neon Gradient */
+/* 3. Thanh tiến độ & tab điều hướng chuyển sang neutral dashboard */
 [data-testid="stProgress"] > div > div > div > div {
-    background: linear-gradient(90deg, #00ad91 0%, #6954d9 100%) !important;
+    background: #374151 !important;
     border-radius: 99px !important;
-    box-shadow: 0 0 12px rgba(0, 173, 145, 0.4) !important;
+    box-shadow: none !important;
 }
 
-/* 4. Thanh Tab (st.tabs) chuẩn Doanh Nghiệp */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
     border-bottom: 2px solid #e2e8f0;
@@ -116,9 +116,9 @@ html, body, [class*="css"] {
     background: #f1f5f9;
 }
 .stTabs [aria-selected="true"] {
-    color: #00ad91 !important;
+    color: #0f172a !important;
     font-weight: 800 !important;
-    border-bottom: 3px solid #00ad91 !important;
+    border-bottom: 3px solid #475569 !important;
     background: transparent !important;
 }
 
@@ -149,27 +149,26 @@ html, body, [class*="css"] {
     height: 100%;
 }
 @keyframes pulseDot {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 173, 145, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(0, 173, 145, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 173, 145, 0); }
+    0% { transform: scale(1); }
+    100% { transform: scale(1); }
 }
 .pulsing-dot {
     display: inline-block;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #00ad91;
+    background: #475569;
     margin-right: 6px;
-    animation: pulseDot 2s infinite;
+    animation: none;
 }
 .pulsing-dot-cpu {
     display: inline-block;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #c77700;
+    background: #a16207;
     margin-right: 6px;
-    animation: pulseDot 2s infinite;
+    animation: none;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1477,9 +1476,10 @@ st.markdown("""
         padding-top: 2rem !important;
         padding-bottom: 2.5rem !important;
         max-width: 96% !important;
+        background: #f8fafc !important;
     }
     
-    /* Rounded modern components */
+    /* Rounded neutral components */
     .stButton > button, 
     div[data-baseweb="select"], 
     div[data-baseweb="popover"], 
@@ -1487,6 +1487,8 @@ st.markdown("""
     div[data-testid="stDataFrame"], 
     div[data-testid="stFileUploader"] {
         border-radius: 8px !important;
+        border: 1px solid #e5e7eb !important;
+        box-shadow: none !important;
     }
     /* Khung upload to hơn, có icon + chữ hướng dẫn tiếng Việt (theo đúng frontend_mockup.html)
        thay cho giao diện mặc định của Streamlit — CSS thuần, không dùng JS nên không bị lỗi
@@ -1504,7 +1506,7 @@ st.markdown("""
     section[data-testid="stFileUploaderDropzone"]::before {
         content: "⇧";
         font-size: 26px;
-        color: #00ad91;
+        color: #334155;
         font-weight: 700;
         order: -3;
     }
@@ -1548,7 +1550,7 @@ st.markdown("""
         font-size: 22px !important;
         font-weight: 800;
         line-height: 1 !important;
-        color: #00ad91;
+        color: #334155;
     }
     /* "200MB per file..." đã có sẵn ở ô "Dung lượng tối đa" bên dưới nên ẩn dòng trùng lặp này đi,
        thay bằng phụ đề "hoặc bấm để chọn file từ máy tính" đúng theo bản thiết kế */
@@ -1583,15 +1585,18 @@ st.markdown("""
         flex-shrink: 0;
     }
 
-    /* Elegant buttons */
+    /* Neutral buttons */
     .stButton > button {
-        border: 1px solid rgba(0, 173, 145, 0.25) !important;
+        border: 1px solid #d9e2ec !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
         font-weight: 600 !important;
         transition: all 0.2s ease !important;
     }
     .stButton > button:hover {
-        border-color: #00ad91 !important;
-        box-shadow: 0 2px 8px rgba(0, 173, 145, 0.15) !important;
+        background: #eff6ff !important;
+        border-color: #93c5fd !important;
+        box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08) !important;
     }
 
     /* Hub Notice Boxes */
@@ -1891,22 +1896,22 @@ if combined is None:
 # 1. BẢNG ĐIỀU KHIỂN BÊN TRÁI (SIDEBAR)
 # ==========================================
 st.sidebar.markdown("""
-<div style="display:flex; align-items:center; gap:10px; padding:12px 12px 13px; border-radius:10px; margin-bottom:16px; background:linear-gradient(135deg, #00ad91 0%, #6954d9 100%);">
-    <span style="flex:none; width:34px; height:34px; border-radius:9px; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; font-size:18px;">🛢️</span>
+<div style="display:flex; align-items:center; gap:10px; padding:12px 12px 13px; border-radius:10px; margin-bottom:16px; background:#f8fafc; border:1px solid #e5e7eb;">
+    <span style="flex:none; width:34px; height:34px; border-radius:9px; background:#f1f5f9; display:flex; align-items:center; justify-content:center; font-size:18px; color:#1f2937;">O</span>
     <div style="line-height:1.3;">
-        <b style="display:block; font-size:13.5px; font-weight:800; color:#ffffff; letter-spacing:-0.01em;">Oil Forecast Hub</b>
-        <span style="font-size:10px; font-weight:600; color:rgba(255,255,255,0.85); letter-spacing:0.03em; text-transform:uppercase;">Automated Evaluation</span>
+        <b style="display:block; font-size:13.5px; font-weight:800; color:#0f172a; letter-spacing:-0.01em;">Oil Forecast</b>
+        <span style="font-size:10px; font-weight:600; color:#475569; letter-spacing:0.03em; text-transform:uppercase;">Operations</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 st.sidebar.caption("KHU VỰC LÀM VIỆC")
 NAV_OPTIONS = [
-    "◈  Dự báo",
-    "▦  Đánh giá mô hình",
-    "◷  Lịch sử & Xuất dữ liệu",
-    "📈  Biểu đồ",
-    "❓  Hướng dẫn sử dụng"
+    "Dự báo",
+    "Đánh giá mô hình",
+    "Lịch sử & Xuất dữ liệu",
+    "Biểu đồ",
+    "Hướng dẫn sử dụng"
 ]
 # Không được gán st.session_state["main_nav_radio"] SAU KHI widget cùng key này đã được tạo ở
 # một lượt chạy trước (Streamlit ném StreamlitAPIException) — các nút "chuyển trang" trong app chỉ
@@ -1929,10 +1934,10 @@ inject_oil_tour_engine(nav_choice)
 st.sidebar.markdown("---")
 st.sidebar.caption("MÔ HÌNH DỰ BÁO")
 st.sidebar.markdown("""
-<div style="padding:10px 12px; border-radius:8px; background:#eaf5f4; border:1px solid #bcebdc; font-size:12.5px;">
-    <div style="color:#116d5c; font-size:11px; margin-bottom:2px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">ĐỘNG CƠ AI CHUẨN HÓA:</div>
-    <b style="color:#075f57; font-size:13.5px;">🧠 GUMNet Production</b>
-    <div style="color:#116d5c; font-size:11px; margin-top:3px;">Đã nạp checkpoint cho 7/7 mốc thời gian</div>
+<div style="padding:10px 12px; border-radius:8px; background:#f8fafc; border:1px solid #e5e7eb; font-size:12.5px; color:#1f2937;">
+    <div style="color:#475569; font-size:11px; margin-bottom:2px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Model</div>
+    <b style="color:#0f172a; font-size:13.5px;">GUMNet</b>
+    <div style="color:#475569; font-size:11px; margin-top:3px;">7/7 horizons ready</div>
 </div>
 """, unsafe_allow_html=True)
 sel_models = ["GUMNet"]
@@ -2122,13 +2127,13 @@ def render_global_pipeline_banner():
         title = s.get("title", "")
         if state == "done":
             step_html_items.append(
-                f'<span style="color:#087762; font-weight:700; font-size:12.5px; display:inline-flex; align-items:center; gap:4px;">'
-                f'<span style="color:#00ad91;">✓</span> {title}</span>'
+                f'<span style="color:#334155; font-weight:700; font-size:12.5px; display:inline-flex; align-items:center; gap:4px;">'
+                f'<span style="color:#475569;">✓</span> {title}</span>'
             )
         elif state == "running":
             step_html_items.append(
-                f'<span style="color:#075f57; font-weight:800; font-size:12.5px; display:inline-flex; align-items:center; gap:4px; background:#dff5f1; padding:2px 8px; border-radius:6px;">'
-                f'<span style="color:#00ad91; animation:pulseDot 1.5s infinite;">●</span> {title}</span>'
+                f'<span style="color:#0f172a; font-weight:800; font-size:12.5px; display:inline-flex; align-items:center; gap:4px; background:#f1f5f9; padding:2px 8px; border-radius:6px;">'
+                f'<span style="color:#475569; animation:pulseDot 1.5s infinite;">●</span> {title}</span>'
             )
         elif state == "failed":
             step_html_items.append(
@@ -2210,7 +2215,7 @@ def render_global_pipeline_banner():
         }}
         .pipeline-spinner {{
             border: 4px solid #f1f5f9;
-            border-top: 4px solid #00ad91;
+            border-top: 4px solid #475569;
             border-radius: 50%;
             width: 44px; height: 44px;
             animation: spinLock 1s linear infinite;
@@ -2224,7 +2229,7 @@ def render_global_pipeline_banner():
         <div class="pipeline-lock-overlay">
             <div class="pipeline-lock-box">
                 <div class="pipeline-spinner"></div>
-                <div style="font-size:11.5px; font-weight:800; color:#00ad91; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;">
+                <div style="font-size:11.5px; font-weight:800; color:#475569; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;">
                     HỆ THỐNG ĐANG TỰ ĐỘNG XỬ LÝ DỮ LIỆU
                 </div>
                 <h3 style="margin:4px 0 10px; font-size:20px; font-weight:800; color:#0f172a;">
@@ -2281,10 +2286,10 @@ if is_pipeline_busy:
 # ──────────────────────────────────────────
 # TRANG 1: DỰ BÁO
 # ──────────────────────────────────────────
-if nav_choice == "◈  Dự báo":
+if nav_choice == "Dự báo":
     st.markdown("""
     <div style="margin-bottom: 22px;">
-        <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRUNG TÂM DỰ BÁO GIÁ DẦU</div>
+        <div style="color:#475569; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRUNG TÂM DỰ BÁO GIÁ DẦU</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Dự Báo Thị Trường</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Tạo dự báo giá đa mốc thời gian từ dữ liệu thị trường mới nhất bằng GUMNet Production.</p>
     </div>
@@ -2520,10 +2525,10 @@ if nav_choice == "◈  Dự báo":
 # ──────────────────────────────────────────
 # TRANG 2: ĐÁNH GIÁ MÔ HÌNH (METRICS)
 # ──────────────────────────────────────────
-elif nav_choice == "▦  Đánh giá mô hình":
+elif nav_choice == "Đánh giá mô hình":
     st.markdown("""
     <div style="margin-bottom: 22px;">
-        <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">KIỂM ĐỊNH MÔ HÌNH (BACKTESTING)</div>
+        <div style="color:#475569; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">KIỂM ĐỊNH MÔ HÌNH (BACKTESTING)</div>
         <h1 style="margin:4px 0; font-size:28px; font-weight:800; letter-spacing:-.03em;">Đánh Giá Độ Chính Xác</h1>
         <p style="margin:0; color:#64748b; font-size:14px;">Theo dõi sai số MAE/MAPE từ các dự báo đối chiếu với giá thị trường thực tế.</p>
     </div>
@@ -2591,7 +2596,7 @@ elif nav_choice == "▦  Đánh giá mô hình":
             """, unsafe_allow_html=True)
         
         st.markdown("""
-        <div style="background:#f8fafc; border-left:4px solid #00ad91; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
+        <div style="background:#f8fafc; border-left:4px solid #64748b; border-radius:6px; padding:11px 16px; margin:14px 0 18px; font-size:13px; color:#334155; line-height:1.6;">
             <b>💡 Cẩm nang đọc chỉ số & hành động:</b><br>
             • <b>MAPE (%)</b>: Phần trăm sai lệch trung bình giữa giá AI đoán so với giá thị trường thực tế. 
               <span style="color:#087762; font-weight:700;">Xanh (&lt; 7%)</span>: Sai số đang dưới ngưỡng tham khảo ➔ 
@@ -2656,7 +2661,7 @@ elif nav_choice == "▦  Đánh giá mô hình":
 # ──────────────────────────────────────────
 # TRANG 3: LỊCH SỬ & XUẤT DỮ LIỆU
 # ──────────────────────────────────────────
-elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
+elif nav_choice == "Lịch sử & Xuất dữ liệu":
     st.markdown("""
     <div style="margin-bottom: 22px;">
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRA CỨU & KIỂM TOÁN</div>
@@ -2778,7 +2783,7 @@ elif nav_choice == "◷  Lịch sử & Xuất dữ liệu":
 # TRANG 4: BIỂU ĐỒ (gộp toàn bộ lịch sử, tách riêng khỏi trang Lịch sử theo yêu cầu —
 # xem đủ 4 mặt hàng cùng lúc, trải dài từ ngày cũ nhất đến mới nhất, không giới hạn ở 1 đợt)
 # ──────────────────────────────────────────
-elif nav_choice == "📈  Biểu đồ":
+elif nav_choice == "Biểu đồ":
     st.markdown("""
     <div style="margin-bottom: 22px;">
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">TRA CỨU & KIỂM TOÁN</div>
@@ -2813,7 +2818,7 @@ elif nav_choice == "📈  Biểu đồ":
 # ──────────────────────────────────────────
 # TRANG 5: HƯỚNG DẪN SỬ DỤNG
 # ──────────────────────────────────────────
-elif nav_choice == "❓  Hướng dẫn sử dụng":
+elif nav_choice == "Hướng dẫn sử dụng":
     st.markdown("""
     <div style="margin-bottom: 22px;">
         <div style="color:#00ad91; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.09em;">HƯỚNG DẪN VẬN HÀNH</div>

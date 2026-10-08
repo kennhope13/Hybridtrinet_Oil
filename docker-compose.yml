@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+    container_name: oil-forecast-app
+    command: python -m streamlit run app_main.py --server.address 0.0.0.0 --server.port 8502
+    ports:
+      - "8502:8502"
+    environment:
+      - TRAIN_DEVICE=cpu
+      - STREAMLIT_SERVER_HEADLESS=true
+    volumes:
+      - ./checkpoints_multi:/app/checkpoints_multi
+      - ./datasets:/app/datasets
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  train:
+    build:
+      context: .
+    container_name: oil-forecast-train
+    command: python train_all_horizons.py --models GUMNet --horizons 1 5 10 15 20 30 60 --epochs 20
+    environment:
+      - TRAIN_DEVICE=cpu
+    volumes:
+      - ./checkpoints_multi:/app/checkpoints_multi
+      - ./datasets:/app/datasets
+      - ./logs:/app/logs
+    restart: "no"
