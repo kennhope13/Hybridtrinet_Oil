@@ -1,79 +1,211 @@
-# 🛢️ Hệ Thống Dự Báo Giá Dầu Khí Thông Minh (AI Oil Forecast)
+# Crude Oil Multi-Horizon Forecasting Platform
 
-Ứng dụng này sử dụng các mô hình Trí Tuệ Nhân Tạo (Deep Learning) tiên tiến như **GUMNet** và **HybridTriNet** để học quy luật thị trường và đưa ra các dự báo giá dầu mỏ cho nhiều mốc thời gian trong tương lai.
+A multi-horizon crude oil forecasting system for 1, 5, 10, 15, 20, 30, and 60 days. It includes two deep learning architectures, GUMNet and HybridTriNet, a background GUMNet candidate evaluation workflow, and PostgreSQL-backed ingestion audit history.
 
-## Cơ sở dữ liệu ứng dụng
+---
 
-Ứng dụng dùng **PostgreSQL 16** để lưu lịch sử các đợt nạp dữ liệu và trạng thái từng tệp (đã lưu, bị từ chối hoặc không có dữ liệu mới). Schema được tạo tự động khi app kết nối lần đầu; lịch sử cũ trong `ingestion_history.json` được nhập một lần nếu tệp tồn tại.
+## 1. System Architecture
 
-Các file dữ liệu chuỗi thời gian và checkpoint PyTorch vẫn nằm trong `datasets/` và `checkpoints_multi/`. PostgreSQL hiện lưu metadata và nhật ký upload, không thay thế các file này. Docker Compose lưu dữ liệu PostgreSQL trong named volume `postgres_data`.
+The application separates the Streamlit interface, background orchestration, forecasting models, and persistent storage:
 
-Khởi chạy bằng Docker Compose:
+```mermaid
+flowchart TD
+    subgraph UI_Layer["Streamlit Web UI (Port 8502)"]
+        UI["app_main.py (Multi-Tab Dashboard)"]
+        Tab1["Live Forecast"]
+        Tab2["Backtest Metrics"]
+        Tab3["Upload Audit History"]
+        Tab4["Visualizations"]
+        UI --- Tab1 & Tab2 & Tab3 & Tab4
+    end
 
-```powershell
-Copy-Item .env.example .env
-docker compose up -d --build app
+    subgraph Service_Orchestration["MLOps and Orchestration Layer"]
+        Engine["pipeline_engine.py\n(Background Orchestrator)"]
+        Lock[".pipeline.lock\n(Process Lock and Stale Watchdog)"]
+        Status[".pipeline_status.json\n(Persistent State)"]
+        Worker["backtest_worker.py\n(Backtest Simulation)"]
+        Trainer["train_all_horizons.py\n(Candidate Trainer)"]
+        Engine <--> Lock
+        Engine <--> Status
+        Engine --> Worker
+        Engine --> Trainer
+    end
+
+    subgraph DL_Models["Deep Learning Models"]
+        GUMNet["GUMNet (Retraining and Quantile Forecasting)\nWavelet-KAN + Dilated CNN + GRU-Attention"]
+        HybridTriNet["HybridTriNet (Multi-Branch Model)\nRBF-KAN + Patch Transformer + GRU"]
+    end
+
+    subgraph Storage_Layer["Separated Persistence Layer"]
+        Postgres[("PostgreSQL 16\n• ingestion_batches\n• ingestion_files (JSONB)\n• app_metadata")]
+        FileStore[("Filesystem and Docker Volumes\n• Datasets: datasets/\n• Checkpoints: checkpoints_multi/\n• Candidates: checkpoints_candidate/")]
+    end
+
+    UI -->|"Trigger evaluation and ingestion"| Engine
+    UI -->|"Load GUMNet or HybridTriNet"| DL_Models
+    UI <-->|"Audit queries and ingestion logs"| Postgres
+    Engine <-->|"Promote or restore checkpoints"| FileStore
+    Trainer -->|"Save candidate weights"| FileStore
 ```
 
-`POSTGRES_PASSWORD` trong `.env.example` chỉ là mật khẩu phát triển; hãy đổi trước khi đưa app lên server. `docker compose down` giữ database. `docker compose down -v` xóa volume và toàn bộ database bên trong. Sao lưu volume cùng với thư mục dữ liệu/checkpoint để khôi phục đầy đủ ứng dụng.
+---
+
+## 2. Background Candidate Evaluation Workflow
+
+`pipeline_engine.py` evaluates whether the current GUMNet should be retrained after new data is ingested:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Streamlit UI
+    participant DB as PostgreSQL 16
+    participant Pipe as Pipeline Engine
+    participant BW as Backtest Worker
+    participant TR as Candidate Trainer
+    participant FS as Checkpoint Storage
+
+    User->>UI: Upload new price data (Excel or CSV)
+    UI->>DB: Record batch and file metadata (JSONB)
+    UI->>UI: Merge price series and apply trading-day calendar
+    UI->>Pipe: Start background evaluation
+    Note over Pipe: Evaluate trigger conditions:\nnew_rows >= 5 and eval_pairs >= 10
+
+    alt Not enough data for evaluation
+        Pipe-->>UI: Skip retraining and keep current checkpoints
+    else Enough data
+        Pipe->>Pipe: Acquire .pipeline.lock
+        Pipe->>BW: Backtest current model on new observations
+        alt MAPE <= 10% (below the retraining trigger threshold)
+            Pipe-->>UI: Finish evaluation without training a candidate
+        else MAPE > 10%
+            Pipe->>TR: Train an isolated candidate in checkpoints_candidate/
+            Pipe->>BW: Compare candidate and current production checkpoints
+            alt Candidate has lower MAPE
+                Pipe->>FS: Back up current production checkpoints
+                Pipe->>FS: Promote candidate checkpoints to checkpoints_multi/
+                Pipe-->>UI: Report that the candidate was applied
+            else Candidate does not improve or an error occurs
+                Pipe->>FS: Keep or restore the current production checkpoints
+                Pipe-->>UI: Report that current checkpoints were retained
+            end
+        end
+        Pipe->>Pipe: Release .pipeline.lock
+    end
+    UI-->>User: Show forecasts and evaluation results
+```
 
 ---
 
-## 📅 1. Cách Tính Ngày Dự Đoán (Lịch Trình Tương Lai)
+## 3. Model Architectures
 
-Hệ thống được thiết kế để sát với thực tế giao dịch của thị trường tài chính và dầu mỏ:
-*   **Bỏ qua cuối tuần:** Khi dự báo tương lai (1 ngày, 5 ngày, 100 ngày...), hệ thống tự động bỏ qua **Thứ 7 và Chủ Nhật**.
-*   **Ví dụ:** Nếu ngày gốc (ngày upload cuối cùng) là Thứ Tư (22/04), thì:
-    *   Mốc **+1 ngày**: sẽ rơi vào Thứ Năm (23/04).
-    *   Mốc **+5 ngày**: sẽ rơi vào Thứ Tư tuần sau (29/04) vì đã tự động bỏ qua ngày 25 và 26 (T7, CN).
-*   **Điểm Neo (Từ Mốc):** Khi bạn upload một file, hệ thống sẽ BẮT BUỘC lấy ngày lớn nhất trong file đó làm "Hiện tại" và dùng nó để phóng chiếu ra tương lai.
+### GUMNet: Wavelet-KAN, Dilated CNN, and GRU-Attention
+
+GUMNet is used by the background candidate workflow and produces quantile forecasts:
+
+- **Wavelet-KAN branch:** Uses a Mexican Hat wavelet basis, combined with SiLU activation:
+
+  $$\text{wavelet} = (1 - x_{\text{norm}}^2) \cdot e^{-0.5 \cdot x_{\text{norm}}^2}$$
+
+- **Dilated CNN branch:** Uses 1D convolution with `dilation=2` and `AdaptiveAvgPool1d` to capture local patterns over a wider receptive field.
+- **GRU and attention branch:** Uses a two-layer GRU and `nn.MultiheadAttention` with four heads.
+- **Gating and quantile head:** A softmax gating layer combines the three branches. The output includes quantiles at $q = 0.1, 0.5, 0.9$.
+
+```mermaid
+flowchart LR
+    X["Input\n[Batch, Seq_Len, Features]"]
+    subgraph GUMNet_Architecture["GUMNet Architecture"]
+        CNN["Dilated Conv1D\n(dilation=2) + Pool"]
+        GRU["Two-Layer GRU\n+ MultiheadAttention"]
+        KAN["Wavelet-KAN\n(Mexican Hat) + Pool"]
+        Gate["Learnable Softmax Gating"]
+        Fusion["Weighted Feature Fusion\nw_cnn·CNN + w_gru·GRU + w_kan·KAN"]
+        Out["Quantile Output Layer\n(Horizon × quantiles 0.1, 0.5, 0.9)"]
+        X --> CNN & GRU & KAN
+        CNN & GRU & KAN --> Gate
+        CNN & GRU & KAN --> Fusion
+        Gate -.->|"Branch weights"| Fusion
+        Fusion --> Out
+    end
+```
+
+<p align="center">
+  <img src="docs/images/gumnet_architecture.png" alt="GUMNet Architecture Diagram" width="850"/>
+</p>
+
+### HybridTriNet: RBF-KAN, Patch Transformer, and GRU
+
+HybridTriNet is a multi-branch forecasting model combining:
+
+- **RBF-KAN branch:** Uses radial basis function expansion to learn nonlinear feature mappings.
+- **Patch Transformer Encoder:** Splits the time series into patches (`patch_len=16`, `stride=8`), adds positional encoding, and applies `torch.nn.TransformerEncoder`.
+- **GRU branch:** Captures sequential patterns in the time series.
+- **Adaptive softmax gating:** Learns how to combine branch representations for each forecast horizon.
+
+<p align="center">
+  <img src="docs/images/hybridtrinet_architecture.png" alt="HybridTriNet Architecture Diagram" width="850"/>
+</p>
+
+---
+
+## 4. Database and Deployment
+
+The application separates relational audit data from time-series files and model checkpoints:
+
+- **PostgreSQL 16:** Stores ingestion audit history and metadata.
+  - `ingestion_batches`: Summary information for each upload batch.
+  - `ingestion_files`: Per-file status, SHA-256 hash, and additional metadata in `details_json` (`JSONB`).
+  - Existing records in `ingestion_history.json` are migrated to the database on first startup when that file is present.
+- **Filesystem and Docker volumes:** Store time-series datasets in `datasets/` and PyTorch checkpoints and scalers in `checkpoints_multi/`.
+
+### Run with Docker Compose
+
+1. Create a local environment file:
+
+   Linux or macOS:
+   ```bash
+   cp .env.example .env
+   ```
+
+   Windows PowerShell:
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+2. Build and start the app and database:
+
+   ```bash
+   docker compose up -d --build app
+   ```
+
+   The app waits for the database health check before starting.
+
+3. Open the Streamlit dashboard at `http://localhost:8502`.
 
 ---
 
-## 🧮 2. Cách Tính Các Chỉ Số Đánh Giá Mô Hình
+## 5. Streamlit Dashboard
 
-Hệ thống đo lường độ thông minh của AI thông qua các chỉ số sai số chuẩn quốc tế:
-
-*   **MAE (Mean Absolute Error - Sai số tuyệt đối trung bình):** Đo lường mức độ lệch giá trị thực tế (USD). Nếu MAE = 2.5 nghĩa là trung bình mô hình đoán chênh lệch 2.5 đô la so với thực tế.
-    *   *Cách tính:* Tổng các độ lệch tuyệt đối chia cho số lượng dự đoán.
-*   **MAPE (Mean Absolute Percentage Error - Sai số phần trăm trung bình):** Đo lường tỷ lệ phần trăm sai lệch. Đây là chỉ số quan trọng nhất để xem mô hình có an toàn không. (Cảnh báo đỏ nếu MAPE > 10%).
-    *   *Cách tính:* Tính phần trăm sai số của từng ngày `(|Thực tế - Dự báo| / Thực tế) * 100`, rồi lấy trung bình.
-*   **MSE & RMSE (Sai số bình phương):** Trừng phạt nặng các dự đoán sai lệch lớn. (Được tích hợp ngầm trong quá trình huấn luyện/finetune).
+1. **Live Forecast:** Upload data and view forecasts for horizons $H \in \{1, 5, 10, 15, 20, 30, 60\}$ days.
+2. **Backtest Metrics:** Review MAE, MAPE, and error-threshold indicators.
+3. **Upload History:** Review ingestion audit records stored in PostgreSQL.
+4. **Visualizations:** Compare forecast trends with observed prices.
+5. **Detailed Results:** Inspect and export evaluation data.
 
 ---
 
-## ⚙️ 3. Quy Trình Hoạt Động (Workflow)
+## 6. Project Structure
 
-Khi bạn thao tác trên ứng dụng, AI hoạt động theo quy trình sau:
-1.  **Nạp Dữ liệu Gốc:** Nạp file lịch sử dài hạn (clean_data_exo_ver1.csv) có chứa các biến ngoại sinh (Vàng, USD, Chỉ số địa chính trị).
-2.  **Nhận Dữ liệu Upload:** Ghép file Excel/CSV bạn vừa tải lên vào dữ liệu gốc.
-3.  **Lọc Mốc Tương Lai:** Cắt bỏ dữ liệu tương lai rác (nếu có) để ép hệ thống hiểu rằng ngày cuối cùng trong file Upload chính là "Hôm nay".
-4.  **Chuẩn bị (Scaling):** Chuẩn hóa (Normalize) dữ liệu để tương thích với nếp nhăn của mạng Neural.
-5.  **Dự Báo & Trực Quan Hóa:** Đẩy qua mô hình GUMNet/HybridTriNet để xuất ra giá trị tương lai và vẽ biểu đồ.
-6.  **Tự Động Finetune (Nếu Bật):** Mở tiến trình chạy ngầm để AI cập nhật lại trọng số (Weights) dựa trên vùng giá mới (giúp tránh lỗi mô hình bị ngáo khi giá nhảy vọt).
-
----
-
-## 🗂️ 4. Ý Nghĩa Của Các Tab (Thẻ)
-
-Ứng dụng chia làm 5 khu vực chuyên biệt:
-
-### ⬆️ Tab 1: Upload & Dự Báo (Live Forecast)
-*   **Công dụng:** Trạm điều khiển chính. Bạn upload dữ liệu mới nhất vào đây để xem dự báo cho Tương lai (1-100 ngày tới).
-*   **Tính năng đặc biệt:** Bảng tóm tắt đa mốc thời gian và Bảng chi tiết liệt kê lộ trình từng ngày. Có nút Tích tự động cập nhật độ thông minh cho AI ngay khi tải file lên.
-
-### 🏆 Tab 2: Tổng kết (Backtest Metrics)
-*   **Công dụng:** Sổ học bạ của AI. Dùng để xem AI đã dự đoán quá khứ đúng hay sai.
-*   **Tính năng đặc biệt:** Bảng MAE, MAPE và Hệ thống Cảnh báo Thông minh (hiển thị Đỏ/Vàng/Xanh tùy vào mức độ sai số).
-
-### 📋 Tab 3: Lịch sử upload
-*   **Công dụng:** Sổ cái ghi chép. Xem lại chi tiết từng con số Dự báo vs Thực tế cho từng đợt dữ liệu bạn đã từng upload vào ứng dụng.
-
-### 📈 Tab 4: Biểu đồ (Visualization)
-*   **Công dụng:** Góc nhìn trực quan. Giúp so sánh xu hướng (Trend) giữa đường dự đoán của 2 mô hình (nét đứt) và đường giá thực tế (nét liền xanh).
-
-### 🗃️ Tab 5: Bảng chi tiết
-*   **Công dụng:** Dành cho dân data. Xuất toàn bộ DataFrame kết quả chạy mô phỏng để copy/paste hoặc phân tích chuyên sâu bên ngoài.
-
----
-*Cẩm nang này giúp bạn nắm quyền kiểm soát hoàn toàn hệ thống AI Oil Forecast!*
+```text
+├── checkpoints_multi/         # PyTorch checkpoints (.pt), scalers (.npy), and training history
+├── datasets/                  # Time-series datasets
+├── oil_forecast_research_new/ # GUMNet model and DataProcessor source
+├── Hybridtrinet_Oil/src/      # HybridTriNet model source
+├── app_main.py                # Main Streamlit application
+├── pipeline_engine.py         # Background orchestration, state, and process lock
+├── backtest_worker.py         # Backtest simulation and MAE/MAPE evaluation
+├── database.py                # PostgreSQL 16 access (psycopg and JSONB)
+├── docker-compose.yml         # App and PostgreSQL services
+├── Dockerfile                 # Python, PyTorch, and Streamlit image
+└── requirements.txt           # Python dependencies
+```
