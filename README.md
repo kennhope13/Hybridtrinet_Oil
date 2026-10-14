@@ -2,6 +2,21 @@
 
 Ứng dụng này sử dụng các mô hình Trí Tuệ Nhân Tạo (Deep Learning) tiên tiến như **GUMNet** và **HybridTriNet** để học quy luật thị trường và đưa ra các dự báo giá dầu mỏ cho nhiều mốc thời gian trong tương lai.
 
+## Cơ sở dữ liệu ứng dụng
+
+Ứng dụng dùng **PostgreSQL 16** để lưu lịch sử các đợt nạp dữ liệu và trạng thái từng tệp (đã lưu, bị từ chối hoặc không có dữ liệu mới). Schema được tạo tự động khi app kết nối lần đầu; lịch sử cũ trong `ingestion_history.json` được nhập một lần nếu tệp tồn tại.
+
+Các file dữ liệu chuỗi thời gian và checkpoint PyTorch vẫn nằm trong `datasets/` và `checkpoints_multi/`. PostgreSQL hiện lưu metadata và nhật ký upload, không thay thế các file này. Docker Compose lưu dữ liệu PostgreSQL trong named volume `postgres_data`.
+
+Khởi chạy bằng Docker Compose:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build app
+```
+
+`POSTGRES_PASSWORD` trong `.env.example` chỉ là mật khẩu phát triển; hãy đổi trước khi đưa app lên server. `docker compose down` giữ database. `docker compose down -v` xóa volume và toàn bộ database bên trong. Sao lưu volume cùng với thư mục dữ liệu/checkpoint để khôi phục đầy đủ ứng dụng.
+
 ---
 
 ## 📅 1. Cách Tính Ngày Dự Đoán (Lịch Trình Tương Lai)

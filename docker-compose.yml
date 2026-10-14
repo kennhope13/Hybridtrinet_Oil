@@ -1,4 +1,21 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: oil-forecast-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-oil_forecast}
+      POSTGRES_USER: ${POSTGRES_USER:-oil_forecast}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   app:
     build:
       context: .
@@ -6,9 +23,17 @@ services:
     command: python -m streamlit run app_main.py --server.address 0.0.0.0 --server.port 8502
     ports:
       - "8502:8502"
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       - TRAIN_DEVICE=cpu
       - STREAMLIT_SERVER_HEADLESS=true
+      - PGHOST=db
+      - PGPORT=5432
+      - PGDATABASE=${POSTGRES_DB:-oil_forecast}
+      - PGUSER=${POSTGRES_USER:-oil_forecast}
+      - PGPASSWORD=${POSTGRES_PASSWORD:-change-me}
     volumes:
       - ./checkpoints_multi:/app/checkpoints_multi
       - ./datasets:/app/datasets
@@ -27,3 +52,6 @@ services:
       - ./datasets:/app/datasets
       - ./logs:/app/logs
     restart: "no"
+
+volumes:
+  postgres_data:

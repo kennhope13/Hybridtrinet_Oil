@@ -5,6 +5,8 @@ __pycache__/
 *.log
 .git/
 .gitignore
+.env
+*.env
 .venv/
 venv/
 .vscode/

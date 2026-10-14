@@ -306,7 +306,7 @@ def commit_valid_files(
     của đúng file đó cũng được ghi kèm — người dùng đã xác nhận ghi đè ở UI.
     Dùng sha256 thay vì tên file để so khớp: nếu 2 file trùng tên nhưng khác nội dung
     được tải cùng lượt, xác nhận đúng 1 file sẽ không vô tình áp dụng luôn cho file kia.
-    Ghi nhật ký ingestion vào ingestion_history.json.
+    Ghi nhật ký ingestion vào PostgreSQL (hoặc JSON cho thư mục test tùy chỉnh).
     """
     datasets_dir.mkdir(parents=True, exist_ok=True)
     batch_id = f"INGEST-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -416,7 +416,13 @@ def commit_valid_files(
 
 
 def _append_ingestion_history(entry: Dict[str, Any], history_file: Path = HISTORY_FILE):
-    """Ghi bổ sung một bản ghi vào ingestion_history.json an toàn."""
+    """Lưu nhật ký upload vào PostgreSQL; giữ JSON cho thư mục test/legacy tùy chỉnh."""
+    if Path(history_file).resolve() == HISTORY_FILE.resolve():
+        from database import record_ingestion
+
+        record_ingestion(entry)
+        return
+
     current = []
     if history_file.exists():
         try:
@@ -430,10 +436,7 @@ def _append_ingestion_history(entry: Dict[str, Any], history_file: Path = HISTOR
 
 
 def get_ingestion_history() -> List[Dict[str, Any]]:
-    """Lấy danh sách lịch sử nạp dữ liệu."""
-    if not HISTORY_FILE.exists():
-        return []
-    try:
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    """Lấy lịch sử nạp từ PostgreSQL, tự nhập lịch sử JSON cũ nếu có."""
+    from database import list_ingestion_history
+
+    return list_ingestion_history()
