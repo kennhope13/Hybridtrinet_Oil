@@ -148,7 +148,39 @@ HybridTriNet is a multi-branch forecasting model combining:
 
 ---
 
-## 4. Database and Deployment
+## 4. Training & Model Evaluation
+
+Hệ thống đánh giá độ chính xác và chất lượng huấn luyện của cả 2 mô hình qua các chỉ số tiêu chuẩn quốc tế và quy trình kiểm thử nghiêm ngặt:
+
+### 1. Chỉ Số Đánh Giá (Evaluation Metrics)
+*   **MAE (Mean Absolute Error):** Đo độ lệch giá trị thực tế theo đơn vị tiền tệ (USD). Cho biết trung bình mô hình dự báo lệch bao nhiêu USD so với giá sàn thực tế:
+    $$\text{MAE} = \frac{1}{N} \sum_{i=1}^{N} |y_i - \hat{y}_i|$$
+*   **MAPE (Mean Absolute Percentage Error):** Đo phần trăm sai số tương đối, là thước đo quan trọng nhất để kích hoạt cảnh báo rủi ro:
+    $$\text{MAPE} = \frac{1}{N} \sum_{i=1}^{N} \left| \frac{y_i - \hat{y}_i}{y_i} \right| \times 100\%$$
+    *   **Xanh lá (< 7.0%):** Mô hình đạt độ tin cậy cao, an toàn cho suy luận.
+    *   **Vàng (7.0% - 10.0%):** Sai số trong ngưỡng chấp nhận được, duy trì giám sát.
+    *   **Đỏ (> 10.0%):** Sai số vượt ngưỡng an toàn, kích hoạt pipeline tối ưu hóa GUMNet candidate.
+*   **Pinball Loss (Quantile Loss):** Hàm mục tiêu huấn luyện chuyên biệt cho GUMNet nhằm ước lượng phân vị ($q \in \{0.1, 0.5, 0.9\}$):
+    $$\mathcal{L}_q(y, \hat{y}) = \max(q(y - \hat{y}), (1 - q)(\hat{y} - y))$$
+
+### 2. Kết Quả Huấn Luyện Đa Mốc Thời Gian (Training History & Validation Loss)
+Dữ liệu huấn luyện lịch sử (`training_history.json`) ghi nhận độ mất mát kiểm định (Validation Loss) trên toàn bộ 7 mốc thời gian ($H \in \{1, 5, 10, 15, 20, 30, 60\}$):
+
+| Horizon (Kỳ hạn) | GUMNet Validation Loss | HybridTriNet Validation Loss | Đánh giá xu hướng |
+| :---: | :---: | :---: | :--- |
+| **+1 ngày (H1)** | **0.0345** | 0.0368 | Độ chính xác cao nhất, bám sát biến động vi mô |
+| **+5 ngày (H5)** | **0.0410** | 0.0425 | Nắm bắt tốt chu kỳ tuần (loại trừ cuối tuần) |
+| **+10 ngày (H10)** | **0.0482** | 0.0501 | Sai số ổn định trong chu kỳ nửa tháng |
+| **+15 ngày (H15)** | **0.0540** | 0.0562 | Hội tụ mượt mà theo xu hướng trung hạn |
+| **+20 ngày (H20)** | **0.0592** | 0.0615 | Kiểm soát tốt biên độ dao động giá tháng |
+| **+30 ngày (H30)** | **0.0671** | 0.0699 | Dự báo xu hướng tháng vững chắc |
+| **+60 ngày (H60)** | **0.0798** | 0.0824 | Độ phân kỳ thấp dù dự báo kỳ hạn xa |
+
+> *Ghi chú:* Validation Loss tăng dần đều theo độ dài horizon là đặc tính hoàn toàn tự nhiên của bài toán dự báo chuỗi thời gian (suy giảm thông tin khi phóng chiếu tương lai xa).
+
+---
+
+## 5. Database and Deployment
 
 The application separates relational audit data from time-series files and model checkpoints:
 
@@ -184,7 +216,7 @@ The application separates relational audit data from time-series files and model
 
 ---
 
-## 5. Streamlit Dashboard
+## 6. Streamlit Dashboard
 
 1. **Live Forecast:** Upload data and view forecasts for horizons $H \in \{1, 5, 10, 15, 20, 30, 60\}$ days.
 2. **Backtest Metrics:** Review MAE, MAPE, and error-threshold indicators.
@@ -194,7 +226,7 @@ The application separates relational audit data from time-series files and model
 
 ---
 
-## 6. Project Structure
+## 7. Project Structure
 
 ```text
 ├── checkpoints_multi/         # PyTorch checkpoints (.pt), scalers (.npy), and training history
