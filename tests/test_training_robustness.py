@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import unittest
@@ -253,11 +253,11 @@ class TrainingRobustnessTests(unittest.TestCase):
         self.assertFalse(at.exception, f"Trang 1 exception: {at.exception}")
 
         pages = [
-            "▦  Đánh giá mô hình",
-            "◷  Lịch sử & Xuất dữ liệu",
-            "📈  Biểu đồ",
-            "❓  Hướng dẫn sử dụng",
-            "◈  Dự báo",
+            "Đánh giá mô hình",
+            "Lịch sử & Xuất dữ liệu",
+            "Biểu đồ",
+            "Hướng dẫn sử dụng",
+            "Dự báo",
         ]
         for page in pages:
             if at.sidebar.radio:

@@ -14,6 +14,10 @@ from sklearn.preprocessing import StandardScaler
 from project_io import load_checkpoint, read_cache, save_upload, write_cache
 
 
+class DisallowedPayload:
+    pass
+
+
 class ProjectIOTests(unittest.TestCase):
     def test_upload_cannot_escape_or_overwrite(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -48,7 +52,7 @@ class ProjectIOTests(unittest.TestCase):
     def test_unlisted_object_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "model.pt"
-            torch.save({"object": complex(1, 2)}, path)
+            torch.save({"object": DisallowedPayload()}, path)
             with self.assertRaises(Exception):
                 load_checkpoint(path)
 

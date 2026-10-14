@@ -436,7 +436,16 @@ def _append_ingestion_history(entry: Dict[str, Any], history_file: Path = HISTOR
 
 
 def get_ingestion_history() -> List[Dict[str, Any]]:
-    """Lấy lịch sử nạp từ PostgreSQL, tự nhập lịch sử JSON cũ nếu có."""
-    from database import list_ingestion_history
-
-    return list_ingestion_history()
+    """Lấy lịch sử nạp từ PostgreSQL, tự fallback sang JSON cũ nếu DB chưa chạy."""
+    try:
+        from database import list_ingestion_history
+        return list_ingestion_history()
+    except Exception:
+        history_file = ROOT / "ingestion_history.json"
+        if history_file.exists():
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
