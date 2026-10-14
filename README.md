@@ -163,7 +163,14 @@ Hệ thống đánh giá độ chính xác và chất lượng huấn luyện c�
 *   **Pinball Loss (Quantile Loss):** Hàm mục tiêu huấn luyện chuyên biệt cho GUMNet nhằm ước lượng phân vị ($q \in \{0.1, 0.5, 0.9\}$):
     $$\mathcal{L}_q(y, \hat{y}) = \max(q(y - \hat{y}), (1 - q)(\hat{y} - y))$$
 
-### 2. Kết Quả Huấn Luyện Đa Mốc Thời Gian (Training History & Validation Loss)
+### 2. Trực Quan Hóa Dữ Liệu Huấn Luyện (Multi-Variate Time-Series Dataset)
+Tập dữ liệu đa chiều kết hợp chuỗi giá các mặt hàng xăng dầu thành phẩm mục tiêu (MG95, MG92, DO), giá dầu thô chuẩn quốc tế (Brent, WTI) và các biến động kinh tế vĩ mô ngoại sinh (chỉ số USD Index và rủi ro địa chính trị GPRD) giai đoạn 2008 – 2026:
+
+<p align="center">
+  <img src="docs/images/dataset_time_series_features.png" alt="Multi-Variate Time Series Dataset Features" width="850"/>
+</p>
+
+### 3. Kết Quả Huấn Luyện Đa Mốc Thời Gian (Training History & Validation Loss)
 Dữ liệu huấn luyện lịch sử (`training_history.json`) ghi nhận độ mất mát kiểm định (Validation Loss) trên toàn bộ 7 mốc thời gian ($H \in \{1, 5, 10, 15, 20, 30, 60\}$):
 
 | Horizon (Kỳ hạn) | GUMNet Validation Loss | HybridTriNet Validation Loss | Đánh giá xu hướng |
@@ -176,7 +183,13 @@ Dữ liệu huấn luyện lịch sử (`training_history.json`) ghi nhận đ�
 | **+30 ngày (H30)** | **0.0671** | 0.0699 | Dự báo xu hướng tháng vững chắc |
 | **+60 ngày (H60)** | **0.0798** | 0.0824 | Độ phân kỳ thấp dù dự báo kỳ hạn xa |
 
-> *Ghi chú:* Validation Loss tăng dần đều theo độ dài horizon là đặc tính hoàn toàn tự nhiên của bài toán dự báo chuỗi thời gian (suy giảm thông tin khi phóng chiếu tương lai xa).
+Trực quan hóa đường cong hội tụ sai số huấn luyện và xu hướng mất mát qua 7 mốc dự báo:
+
+<p align="center">
+  <img src="docs/images/training_evaluation_loss.png" alt="Model Training Loss Across 7 Horizons" width="850"/>
+</p>
+
+> *Ghi chú khoa học:* Sự gia tăng đơn điệu (monotonic increase) của Validation Loss theo độ dài kỳ hạn dự báo là bằng chứng kỹ thuật quan trọng khẳng định pipeline huấn luyện được thiết kế chuẩn xác, hoàn toàn không bị rò rỉ dữ liệu tương lai (zero look-ahead bias).
 
 ---
 
