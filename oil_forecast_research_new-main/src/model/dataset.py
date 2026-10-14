@@ -20,23 +20,38 @@ class DataProcessor:
         self.feature_scaler = MinMaxScaler(feature_range=(0, 1))
         self.target_scaler = MinMaxScaler(feature_range=(0, 1))
         
-    def prepare_data(self, df: pd.DataFrame, target_cols: list, feature_cols: list, is_train=True):
-        features_data = df[feature_cols].values
-        targets_data = df[target_cols].values
-        
+    def prepare_data(
+        self,
+        df: pd.DataFrame,
+        target_cols: list,
+        feature_cols: list,
+        is_train=True,
+        fit_end_index=None,
+    ):
+        """Scale rows using only the training prefix, then create chronological windows.
+
+        fit_end_index is an exclusive raw-row boundary. Supplying it prevents future
+        validation/test values from influencing MinMaxScaler extrema.
+        """
+        features_data = df[feature_cols].to_numpy(dtype=np.float64)
+        targets_data = df[target_cols].to_numpy(dtype=np.float64)
+
         if is_train:
-            features_scaled = self.feature_scaler.fit_transform(features_data)
-            targets_scaled = self.target_scaler.fit_transform(targets_data)
-        else:
-            features_scaled = self.feature_scaler.transform(features_data)
-            targets_scaled = self.target_scaler.transform(targets_data)
-            
+            fit_end = len(df) if fit_end_index is None else int(fit_end_index)
+            if not 0 < fit_end <= len(df):
+                raise ValueError(f"Invalid scaler fit boundary: {fit_end}")
+            self.feature_scaler.fit(features_data[:fit_end])
+            self.target_scaler.fit(targets_data[:fit_end])
+
+        features_scaled = self.feature_scaler.transform(features_data)
+        targets_scaled = self.target_scaler.transform(targets_data)
+
         X, y = [], []
         valid_range = len(df) - self.seq_len - self.horizon + 1
         for i in range(valid_range):
             X.append(features_scaled[i : i + self.seq_len])
             y.append(targets_scaled[i + self.seq_len : i + self.seq_len + self.horizon])
-        return np.array(X), np.array(y)
+        return np.asarray(X), np.asarray(y)
     
     def inverse_transform_targets(self, y_scaled):
         shape = y_scaled.shape

@@ -2,6 +2,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 def generate_visualizations():
     plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
@@ -9,7 +10,8 @@ def generate_visualizations():
     # -------------------------------------------------------------
     # 1. DATASET VISUALIZATION: Market Prices & Exogenous Trends
     # -------------------------------------------------------------
-    pth = r"D:\user\projects\du_doan_gia_dau\Hybridtrinet_Oil\datasets\du_lieu_noi_suy_clean_updated.xlsx"
+    root = Path(__file__).resolve().parents[1]
+    pth = root / "datasets" / "du_lieu_noi_suy_clean_updated.xlsx"
     df = pd.read_excel(pth)
     date_col = [c for c in df.columns if 'Ng' in c and 'y' in c][0]
     df['Date'] = pd.to_datetime(df[date_col], errors='coerce')
@@ -57,72 +59,45 @@ def generate_visualizations():
     plt.suptitle('Multi-Variate Time-Series Dataset: Petroleum Targets & Exogenous Drivers (2008 - 2026)', 
                  fontsize=14, fontweight='bold', color='#0F172A', y=0.995)
     plt.tight_layout()
-    out_data_img = r"D:\user\projects\du_doan_gia_dau\Hybridtrinet_Oil\docs\images\dataset_time_series_features.png"
+    out_data_img = root / "docs" / "images" / "dataset_time_series_features.png"
     plt.savefig(out_data_img, dpi=300, bbox_inches='tight')
     plt.close()
     print("Saved:", out_data_img)
     
     # -------------------------------------------------------------
-    # 2. TRAINING PERFORMANCE: Validation Loss Across Horizons
+    # 2. CLEAN HOLDOUT PERFORMANCE: Same USD-scale metrics for both models
     # -------------------------------------------------------------
-    hist_pth = r"D:\user\projects\du_doan_gia_dau\Hybridtrinet_Oil\checkpoints_multi\training_history.json"
-    with open(hist_pth, 'r', encoding='utf-8') as f:
-        history = json.load(f)
-    
-    baseline = [h for h in history if 'GUMNet_h60' in h.get('results', {})][-1]
-    res = baseline['results']
-    
+    metrics_path = root / "benchmark" / "clean_run" / "holdout_metrics.csv"
+    metrics = pd.read_csv(metrics_path)
     horizons = [1, 5, 10, 15, 20, 30, 60]
-    gum_loss = [res[f'GUMNet_h{h}'] for h in horizons]
-    hyb_loss = [res[f'HybridTriNet_h{h}'] for h in horizons]
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), dpi=300)
-    
+    metric_specs = [
+        ("mae", "MAE (USD/barrel)"),
+        ("rmse", "RMSE (USD/barrel)"),
+        ("mape", "MAPE (%)"),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5.5), dpi=300)
+    colors = {"GUMNet": "#8B5CF6", "HybridTriNet": "#0284C7"}
     x = np.arange(len(horizons))
-    width = 0.35
-    
-    rects1 = ax1.bar(x - width/2, gum_loss, width, label='GUMNet (Wavelet-KAN + CNN + GRU)', color='#8B5CF6', alpha=0.9)
-    rects2 = ax1.bar(x + width/2, hyb_loss, width, label='HybridTriNet (RBF-KAN + Patch Transformer)', color='#0284C7', alpha=0.9)
-    
-    ax1.set_xlabel('Forecast Horizon (Days ahead)', fontsize=11, fontweight='bold', color='#1E293B')
-    ax1.set_ylabel('Validation Loss (Normalized Scale)', fontsize=11, fontweight='bold', color='#1E293B')
-    ax1.set_title('Validation Loss Convergence across 7 Horizons', fontsize=13, fontweight='bold', color='#0F172A')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels([f'+{h}d' for h in horizons], fontsize=10)
-    ax1.legend(frameon=True, loc='upper left')
-    ax1.grid(True, linestyle=':', alpha=0.6)
-    
-    for r in rects1:
-        h = r.get_height()
-        ax1.annotate(f'{h:.3f}', xy=(r.get_x() + r.get_width()/2, h), xytext=(0, 3),
-                     textcoords="offset points", ha='center', va='bottom', fontsize=8, color='#5B21B6')
-    for r in rects2:
-        h = r.get_height()
-        ax1.annotate(f'{h:.3f}', xy=(r.get_x() + r.get_width()/2, h), xytext=(0, 3),
-                     textcoords="offset points", ha='center', va='bottom', fontsize=8, color='#0369A1')
-                     
-    ax2.plot(horizons, gum_loss, marker='o', lw=2.5, color='#8B5CF6', label='GUMNet Progression')
-    ax2.plot(horizons, hyb_loss, marker='s', lw=2.5, color='#0284C7', label='HybridTriNet Progression')
-    ax2.set_xlabel('Forecast Horizon (H in days)', fontsize=11, fontweight='bold', color='#1E293B')
-    ax2.set_ylabel('Validation Error Trajectory', fontsize=11, fontweight='bold', color='#1E293B')
-    ax2.set_title('Error Trajectory vs Prediction Distance', fontsize=13, fontweight='bold', color='#0F172A')
-    ax2.set_xticks(horizons)
-    ax2.legend(frameon=True, loc='upper left')
-    ax2.grid(True, linestyle=':', alpha=0.6)
-    
-    ax2.annotate('Monotonic loss increase confirms\nno look-ahead leakage across horizons', 
-                 xy=(30, 0.07), xytext=(12, 0.082),
-                 arrowprops=dict(facecolor='#1E293B', shrink=0.05, width=1, headwidth=6),
-                 fontsize=9, color='#1E293B', fontweight='bold',
-                 bbox=dict(boxstyle="round,pad=0.3", fc="#FEF3C7", ec="#D97706", lw=1))
-                 
-    plt.suptitle('Multi-Horizon Model Training Evaluation (GUMNet vs HybridTriNet)', 
-                 fontsize=14, fontweight='bold', color='#0F172A', y=0.98)
-    plt.tight_layout()
-    out_loss_img = r"D:\user\projects\du_doan_gia_dau\Hybridtrinet_Oil\docs\images\training_evaluation_loss.png"
-    plt.savefig(out_loss_img, dpi=300, bbox_inches='tight')
+    width = 0.36
+    for ax, (metric_name, ylabel) in zip(axes, metric_specs):
+        for offset, model_name in [(-width / 2, "GUMNet"), (width / 2, "HybridTriNet")]:
+            subset = metrics[metrics["model"] == model_name].set_index("horizon")
+            values = [float(subset.loc[h, metric_name]) for h in horizons]
+            bars = ax.bar(x + offset, values, width, label=model_name, color=colors[model_name])
+            ax.bar_label(bars, fmt="%.2f", fontsize=7, padding=2)
+        ax.set_title(ylabel)
+        ax.set_xlabel("Forecast horizon (days)")
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x, [str(h) for h in horizons])
+        ax.grid(axis="y", linestyle=":", alpha=0.55)
+        ax.legend()
+
+    fig.suptitle("Rolling-Origin Holdout Performance (70/15/15 split)", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    out_metrics_img = root / "docs" / "images" / "holdout_evaluation_metrics.png"
+    plt.savefig(out_metrics_img, dpi=300, bbox_inches="tight")
     plt.close()
-    print("Saved:", out_loss_img)
+    print("Saved:", out_metrics_img)
 
 if __name__ == '__main__':
     generate_visualizations()

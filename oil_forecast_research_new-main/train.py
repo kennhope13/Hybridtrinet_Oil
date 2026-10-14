@@ -33,8 +33,24 @@ QUANTILES = [0.1, 0.5, 0.9]
 BATCH_SIZE = 32
 EPOCHS = 150
 LR = 1e-3
-VAL_RATIO = 0.2
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
 SEED = 42
+
+
+
+def chronological_window_indices(n_rows: int, seq_len: int, horizon: int):
+    train_end = int(n_rows * TRAIN_RATIO)
+    val_end = int(n_rows * (TRAIN_RATIO + VAL_RATIO))
+    n_windows = n_rows - seq_len - horizon + 1
+    starts = np.arange(max(0, n_windows), dtype=np.int64) + seq_len
+    ends = starts + horizon
+    return (
+        train_end,
+        val_end,
+        np.flatnonzero(ends <= train_end),
+        np.flatnonzero((starts >= train_end) & (ends <= val_end)),
+    )
 
 
 def set_seed(seed: int = 42):
@@ -61,7 +77,8 @@ def read_data(path: Path) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     numeric_cols = [c for c in df.columns if c != DATE_COL]
-    df[numeric_cols] = df[numeric_cols].interpolate(method="linear").bfill().ffill()
+    df[numeric_cols] = df[numeric_cols].ffill()
+    df = df.dropna(subset=numeric_cols).reset_index(drop=True)
 
     return df
 
@@ -89,19 +106,22 @@ def main():
             raise ValueError(f"Missing target column: {c}")
 
     processor = DataProcessor(seq_len=SEQ_LEN, horizon=HORIZON)
+    train_end, _, train_idx, val_idx = chronological_window_indices(
+        len(df), SEQ_LEN, HORIZON
+    )
     X, y = processor.prepare_data(
         df=df,
         target_cols=TARGET_COLS,
         feature_cols=feature_cols,
         is_train=True,
+        fit_end_index=train_end,
     )
 
-    if len(X) == 0:
-        raise ValueError("Not enough data to create training sequences.")
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        raise ValueError("Not enough chronological data for train/validation windows.")
 
-    split_idx = int(len(X) * (1 - VAL_RATIO))
-    X_train, X_val = X[:split_idx], X[split_idx:]
-    y_train, y_val = y[:split_idx], y[split_idx:]
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
 
     train_loader = DataLoader(PetroleumDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(PetroleumDataset(X_val, y_val), batch_size=BATCH_SIZE, shuffle=False)

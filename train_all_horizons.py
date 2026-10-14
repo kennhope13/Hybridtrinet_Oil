@@ -179,8 +179,29 @@ HYBRID_EPOCHS  = 200
 HYBRID_LR      = 2e-4  # Giảm LR để Finetune ổn định hơn
 HYBRID_BATCH   = 32
 
-VAL_RATIO = 0.2
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
 SEED = 42
+
+
+def chronological_window_indices(n_rows, seq_len, horizon):
+    """Split by target timestamps so no target appears in more than one partition.
+
+    Validation/test inputs may use earlier observed history, as they would at
+    inference time. Their target intervals remain strictly outside earlier splits.
+    """
+    train_end = int(n_rows * TRAIN_RATIO)
+    val_end = int(n_rows * (TRAIN_RATIO + VAL_RATIO))
+    n_windows = n_rows - seq_len - horizon + 1
+    if n_windows <= 0:
+        empty = np.array([], dtype=np.int64)
+        return train_end, val_end, empty, empty, empty
+    target_starts = np.arange(n_windows, dtype=np.int64) + seq_len
+    target_ends = target_starts + horizon  # exclusive
+    train_idx = np.flatnonzero(target_ends <= train_end)
+    val_idx = np.flatnonzero((target_starts >= train_end) & (target_ends <= val_end))
+    test_idx = np.flatnonzero((target_starts >= val_end) & (target_ends <= n_rows))
+    return train_end, val_end, train_idx, val_idx, test_idx
 
 import argparse, sys
 
@@ -301,9 +322,10 @@ def update_training_data(specific_file=None):
     base_df = base_df.reset_index()
     base_df = base_df.sort_values(DATE_COL).reset_index(drop=True)
 
-    # Nội suy các cột số nếu có thiếu
+    # Causal imputation only; discard leading rows without historical values.
     num_cols = base_df.select_dtypes(include=[np.number]).columns
-    base_df[num_cols] = base_df[num_cols].interpolate().bfill().ffill()
+    base_df[num_cols] = base_df[num_cols].ffill()
+    base_df = base_df.dropna(subset=num_cols)
 
     # Ghi nguyên tử ra file tạm rồi os.replace
     tmp_data_path = DATA_PATH.with_suffix(".csv.tmp")
@@ -326,7 +348,9 @@ def read_data():
         if c != DATE_COL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     num_cols = df.select_dtypes(include=[np.number]).columns
-    df[num_cols] = df[num_cols].interpolate().bfill().ffill()
+    # Causal imputation only: never interpolate/backfill from future observations.
+    df[num_cols] = df[num_cols].ffill()
+    df = df.dropna(subset=num_cols).reset_index(drop=True)
     return df
 
 
@@ -352,60 +376,114 @@ def compute_regression_metrics(y_true, y_pred):
 
 
 def evaluate_holdout_metrics(df, horizon, device, model_name, checkpoint_path):
-    """Đánh giá trên holdout test set riêng để xác định độ tin cậy của model trên dữ liệu mới."""
+    """Evaluate a saved model on the final chronological 15% holdout segment."""
     if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Không tìm thấy checkpoint để đánh giá: {checkpoint_path}")
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    if model_name == "HybridTriNet":
-        return {"mae": None, "mape": None, "rmse": None, "reason": "hybrid_not_implemented_yet"}
+    train_end, val_end, _, _, test_idx = chronological_window_indices(
+        len(df), GUMNET_SEQ_LEN if model_name == "GUMNet" else HYBRID_SEQ_LEN, horizon
+    )
+    if len(test_idx) == 0:
+        raise ValueError(f"No holdout windows for {model_name} horizon={horizon}")
 
     if model_name == "GUMNet":
         gumnet_dir = str(ROOT / "oil_forecast_research_new-main")
-        sys.path = [p for p in sys.path if p != gumnet_dir]
+        sys.path = [item for item in sys.path if item != gumnet_dir]
         sys.path.insert(0, gumnet_dir)
-        for m in [k for k in list(sys.modules) if k.startswith("src")]:
-            del sys.modules[m]
+        for module in [key for key in list(sys.modules) if key.startswith("src")]:
+            del sys.modules[module]
         from src.model.dataset import DataProcessor
         from src.model.model import GUMNet
 
-        feature_cols = [c for c in df.columns if c != DATE_COL]
+        feature_cols = [col for col in df.columns if col != DATE_COL]
         processor = DataProcessor(seq_len=GUMNET_SEQ_LEN, horizon=horizon)
-        X, y = processor.prepare_data(df, TARGET_COLS, feature_cols, is_train=True)
-        if len(X) < 5:
-            return {"mae": None, "mape": None, "rmse": None, "reason": "not_enough_data"}
-
-        test_start = int(len(X) * 0.8)
-        X_test = X[test_start:]
-        y_test = y[test_start:]
-        dataset = torch.utils.data.TensorDataset(torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.float32))
-        loader = DataLoader(dataset, batch_size=GUMNET_BATCH)
-
-        model = GUMNet(seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols), output_dim=len(TARGET_COLS), horizon=horizon,
-                       d_feat=64, num_quantiles=3).to(device)
+        X, y = processor.prepare_data(
+            df, TARGET_COLS, feature_cols, is_train=True, fit_end_index=train_end
+        )
+        model = GUMNet(
+            seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols),
+            output_dim=len(TARGET_COLS), horizon=horizon,
+            d_feat=64, num_quantiles=3,
+        ).to(device)
         ckpt = load_checkpoint(checkpoint_path, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
         model.eval()
-
-        pred_list = []
-        true_list = []
+        predictions, targets = [], []
         with torch.no_grad():
-            for xb, yb in loader:
-                xb, yb = xb.to(device), yb.to(device)
+            for begin in range(0, len(test_idx), GUMNET_BATCH):
+                ids = test_idx[begin:begin + GUMNET_BATCH]
+                xb = torch.as_tensor(X[ids], dtype=torch.float32, device=device)
                 pred, _ = model(xb)
-                pred = pred[:, :, :, 1]
-                pred_list.append(pred.detach().cpu().numpy())
-                true_list.append(yb.detach().cpu().numpy())
+                predictions.append(pred[:, :, :, 1].cpu().numpy())
+                targets.append(y[ids])
+        y_hat = np.concatenate(predictions, axis=0)
+        y_true = np.concatenate(targets, axis=0)
+        y_hat = processor.inverse_transform_targets(y_hat.reshape(-1, len(TARGET_COLS))).reshape(y_hat.shape)
+        y_true = processor.inverse_transform_targets(y_true.reshape(-1, len(TARGET_COLS))).reshape(y_true.shape)
 
-        y_hat = np.concatenate(pred_list, axis=0) if pred_list else np.empty((0,))
-        y_true = np.concatenate(true_list, axis=0) if true_list else np.empty((0,))
-        y_hat_inv = processor.inverse_transform_targets(y_hat.reshape(-1, len(TARGET_COLS))).reshape(y_hat.shape)
-        y_true_inv = processor.inverse_transform_targets(y_true.reshape(-1, len(TARGET_COLS))).reshape(y_true.shape)
-        flat_true = y_true_inv.reshape(-1)
-        flat_pred = y_hat_inv.reshape(-1)
-        metrics = compute_regression_metrics(flat_true, flat_pred)
-        return metrics
+    elif model_name == "HybridTriNet":
+        hybrid_dir = str(ROOT / "Hybridtrinet_Oil")
+        sys.path = [item for item in sys.path if item != hybrid_dir]
+        sys.path.insert(0, hybrid_dir)
+        for module in [key for key in list(sys.modules) if key.startswith("src")]:
+            del sys.modules[module]
+        from src.model.hybrid_trinet import HybridTriNet
+        from src.model.training import build_windows
 
-    raise ValueError(f"Model không được hỗ trợ đánh giá holdout: {model_name}")
+        feature_cols = [
+            "Unnamed: 0", "BRT DTD", "BRT KH", "WTI",
+            "NgayTrongTuan", "ThangTrongNam", "QuyTrongNam", "Nam",
+            "NgayLe", "SuKienDacBiet", "USD_Index", "GPRD",
+            "MG95", "MG92", "DO 0.001%", "DO 0.05%",
+        ]
+        prepared = prepare_hybrid_data(df, feature_cols)
+        missing = [col for col in feature_cols if col not in prepared.columns]
+        if missing:
+            raise ValueError(f"HybridTriNet input columns missing: {missing}")
+        raw = prepared[feature_cols].to_numpy(dtype=np.float32)
+        mu = raw[:train_end].mean(axis=0).astype(np.float32)
+        sd = raw[:train_end].std(axis=0).astype(np.float32)
+        sd = np.where(sd < 1e-8, 1.0, sd).astype(np.float32)
+        scaled = (raw - mu) / (sd + 1e-8)
+        X, Y = build_windows(scaled, HYBRID_SEQ_LEN, horizon)
+        target_indices = [feature_cols.index(col) for col in TARGET_COLS]
+        y_true = Y[test_idx][:, :, target_indices]
+
+        model = HybridTriNet(
+            k=HYBRID_SEQ_LEN, H=horizon, D_in=len(feature_cols), D_out=len(TARGET_COLS),
+            d_feat=96, kan_M=8, kan_depth=2,
+            gru_hidden=128, gru_layers=1,
+            attn_dmodel=64, attn_heads=4, attn_layers=2,
+            patch_len=16, stride=8,
+        ).to(device)
+        state = load_checkpoint(checkpoint_path, map_location=device)
+        model.load_state_dict(state)
+        model.eval()
+        predictions = []
+        with torch.no_grad():
+            for begin in range(0, len(test_idx), HYBRID_BATCH):
+                ids = test_idx[begin:begin + HYBRID_BATCH]
+                xb = torch.as_tensor(X[ids], dtype=torch.float32, device=device)
+                out, _ = model(xb)
+                predictions.append(out.view(len(ids), horizon, len(TARGET_COLS)).cpu().numpy())
+        y_hat = np.concatenate(predictions, axis=0)
+        y_mu = mu[target_indices].reshape(1, 1, -1)
+        y_sd = sd[target_indices].reshape(1, 1, -1)
+        y_hat = y_hat * y_sd + y_mu
+        y_true = y_true * y_sd + y_mu
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    metrics = compute_regression_metrics(y_true.reshape(-1), y_hat.reshape(-1))
+    first_target = int(test_idx[0]) + (GUMNET_SEQ_LEN if model_name == "GUMNet" else HYBRID_SEQ_LEN)
+    last_target = int(test_idx[-1]) + (GUMNET_SEQ_LEN if model_name == "GUMNet" else HYBRID_SEQ_LEN) + horizon - 1
+    metrics.update({
+        "n_windows": int(len(test_idx)),
+        "n_forecast_values": int(y_true.size),
+        "test_start_date": pd.Timestamp(df[DATE_COL].iloc[first_target]).strftime("%Y-%m-%d"),
+        "test_end_date": pd.Timestamp(df[DATE_COL].iloc[last_target]).strftime("%Y-%m-%d"),
+    })
+    return metrics
 
 
 # ═══════════════════════  GUMNet TRAINING  ════════════════════════════════════
@@ -424,16 +502,22 @@ def train_gumnet_horizon(df, horizon, device, epochs=None, force_retrain=False, 
 
     feature_cols = [c for c in df.columns if c != DATE_COL]
     
+    train_end, val_end, train_idx, val_idx, _ = chronological_window_indices(
+        len(df), GUMNET_SEQ_LEN, horizon
+    )
     processor = DataProcessor(seq_len=GUMNET_SEQ_LEN, horizon=horizon)
-    X, y = processor.prepare_data(df, TARGET_COLS, feature_cols, is_train=True)
-    
-    if len(X) == 0:
-        flush_print(f"  [SKIP] Not enough data for horizon={horizon}")
+    X, y = processor.prepare_data(
+        df, TARGET_COLS, feature_cols, is_train=True, fit_end_index=train_end
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        flush_print(f"  [SKIP] Insufficient chronological windows for horizon={horizon}")
         return None
-
-    split = int(len(X) * (1 - VAL_RATIO))
-    train_loader = DataLoader(PetroleumDataset(X[:split], y[:split]), batch_size=GUMNET_BATCH, shuffle=True)
-    val_loader = DataLoader(PetroleumDataset(X[split:], y[split:]), batch_size=GUMNET_BATCH)
+    train_loader = DataLoader(
+        PetroleumDataset(X[train_idx], y[train_idx]), batch_size=GUMNET_BATCH, shuffle=True
+    )
+    val_loader = DataLoader(
+        PetroleumDataset(X[val_idx], y[val_idx]), batch_size=GUMNET_BATCH, shuffle=False
+    )
 
     model = GUMNet(
         seq_len=GUMNET_SEQ_LEN, input_dim=len(feature_cols),
@@ -591,24 +675,26 @@ def train_hybrid_horizon(df, horizon, device, epochs=None, force_retrain=False, 
         return None
 
     Y_raw = df2[f_cols].values.astype(np.float32)
-    Y_std, mu, sd = standardize(Y_raw)
-
     K = HYBRID_SEQ_LEN
+    train_end, val_end, train_idx, val_idx, _ = chronological_window_indices(
+        len(df2), K, horizon
+    )
+    if train_end <= 0 or len(train_idx) == 0 or len(val_idx) == 0:
+        flush_print(f"  [SKIP] Insufficient chronological windows for HybridTriNet h{horizon}")
+        return None
+    mu = Y_raw[:train_end].mean(axis=0).astype(np.float32)
+    sd = Y_raw[:train_end].std(axis=0).astype(np.float32)
+    sd = np.where(sd < 1e-8, 1.0, sd).astype(np.float32)
+    Y_std = (Y_raw - mu) / (sd + 1e-8)
     X_all, Y_all = build_windows(Y_std, K, horizon)
 
-    # target = last 4 cols (MG95, MG92, DO 0.001%, DO 0.05%)
     tgt_idx = [f_cols.index(c) for c in TARGET_COLS]
-    Y_tgt = Y_all[:, :, tgt_idx]  # [N, H, 4]
+    Y_tgt = Y_all[:, :, tgt_idx]
+    y_mu = mu[tgt_idx].astype(np.float32)
+    y_sd = sd[tgt_idx].astype(np.float32)
 
-    # Re-standardize target
-    y_raw_flat = Y_raw[:, tgt_idx]
-    y_mu = np.nanmean(y_raw_flat, axis=0).astype(np.float32)
-    y_sd = np.nanstd(y_raw_flat, axis=0).astype(np.float32)
-    y_sd = np.where(y_sd < 1e-8, 1.0, y_sd)
-
-    split = int(len(X_all) * (1 - VAL_RATIO))
-    tr_ds = WindowDS(X_all[:split], Y_tgt[:split])
-    va_ds = WindowDS(X_all[split:], Y_tgt[split:])
+    tr_ds = WindowDS(X_all[train_idx], Y_tgt[train_idx])
+    va_ds = WindowDS(X_all[val_idx], Y_tgt[val_idx])
     tr_loader = DataLoader(tr_ds, batch_size=HYBRID_BATCH, shuffle=True)
     va_loader = DataLoader(va_ds, batch_size=HYBRID_BATCH)
 
@@ -784,6 +870,7 @@ if __name__ == "__main__":
     flush_print(f"📊 Dữ liệu sẵn sàng: {len(df)} dòng.")
     
     results = {}
+    holdout_metrics = {}
     all_val_losses = []
 
     # 3. Huấn luyện từng mốc Horizon riêng biệt (Multi-Model Mode)
@@ -803,7 +890,8 @@ if __name__ == "__main__":
                 sys.exit(1)
             ckpt_path = OUT_DIR / f"gumnet_h{hz}.pt"
             test_metrics = evaluate_holdout_metrics(df, hz, device, "GUMNet", ckpt_path)
-            flush_print(f"    Test metrics (GUMNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f}")
+            holdout_metrics[f"GUMNet_h{hz}"] = test_metrics
+            flush_print(f"    Holdout (GUMNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f} [{test_metrics['test_start_date']}..{test_metrics['test_end_date']}]")
             results[f"GUMNet_h{hz}"] = round(float(v_loss), 6)
             results[f"h{hz}"] = round(float(v_loss), 6)
             all_val_losses.append(float(v_loss))
@@ -815,14 +903,9 @@ if __name__ == "__main__":
                 flush_print(f"❌ Mốc {hz} ngày (HybridTriNet) bị bỏ qua (thiếu cột dữ liệu) — dừng toàn bộ job, không báo thành công khi thiếu kết quả.")
                 sys.exit(1)
             ckpt_path = OUT_DIR / f"hybrid_h{hz}.pt"
-            try:
-                test_metrics = evaluate_holdout_metrics(df, hz, device, "HybridTriNet", ckpt_path)
-                if test_metrics.get("mae") is not None:
-                    flush_print(f"    Test metrics (HybridTriNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f}")
-                else:
-                    flush_print(f"    ⚠️ HybridTriNet h{hz} chưa có evaluator holdout đầy đủ; đang dùng validation loss để theo dõi.")
-            except Exception as exc:
-                flush_print(f"    ⚠️ Không đánh giá test cho HybridTriNet h{hz} được: {exc}")
+            test_metrics = evaluate_holdout_metrics(df, hz, device, "HybridTriNet", ckpt_path)
+            holdout_metrics[f"HybridTriNet_h{hz}"] = test_metrics
+            flush_print(f"    Holdout (HybridTriNet h{hz}): MAE={test_metrics['mae']:.4f}, MAPE={test_metrics['mape']:.2f}%, RMSE={test_metrics['rmse']:.4f} [{test_metrics['test_start_date']}..{test_metrics['test_end_date']}]")
             results[f"HybridTriNet_h{hz}"] = round(float(v_loss), 6)
             all_val_losses.append(float(v_loss))
             if f"h{hz}" not in results:
@@ -838,7 +921,16 @@ if __name__ == "__main__":
 
     flush_print("\n✅ TẤT CẢ CÁC MÔ HÌNH ĐÃ ĐƯỢC CẬP NHẬT!")
     flush_print(f"Checkpoints đã lưu tại: {OUT_DIR}")
-    
+
+    if holdout_metrics:
+        metric_rows = []
+        for key, metrics in holdout_metrics.items():
+            model_name, horizon_text = key.rsplit("_h", 1)
+            metric_rows.append({"model": model_name, "horizon": int(horizon_text), **metrics})
+        pd.DataFrame(metric_rows).sort_values(["model", "horizon"]).to_csv(
+            OUT_DIR / "holdout_metrics.csv", index=False
+        )
+
     # 4. Lưu lại lịch sử phiên huấn luyện vào training_history.json
     try:
         import datetime
@@ -882,6 +974,14 @@ if __name__ == "__main__":
                     "targets": TARGET_COLS
                 },
                 "results": results,
+                "holdout_metrics": holdout_metrics,
+                "evaluation_protocol": {
+                    "split": "chronological 70/15/15 by raw target timestamps",
+                    "scaler_fit": "training rows only",
+                    "target_overlap": "none across train, validation, and holdout",
+                    "holdout_start": min((item["test_start_date"] for item in holdout_metrics.values()), default=None),
+                    "holdout_end": max((item["test_end_date"] for item in holdout_metrics.values()), default=None),
+                },
                 "avg_val_loss": round(sum(all_val_losses) / len(all_val_losses), 6) if all_val_losses else None,
                 "status": "success",
             }

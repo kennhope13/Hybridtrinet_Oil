@@ -1,0 +1,196 @@
+[
+  {
+    "session_id": "TR-20261014-115320",
+    "job_id": "ffdfaca8709c",
+    "timestamp": "14/10/2026 11:53:20",
+    "mode": "Train lại từ đầu",
+    "models": [
+      "GUMNet",
+      "HybridTriNet"
+    ],
+    "device": "CUDA",
+    "device_name": "NVIDIA GeForce RTX 5060 Ti",
+    "epochs": null,
+    "horizons": [
+      "1d",
+      "5d",
+      "10d",
+      "15d",
+      "20d",
+      "30d",
+      "60d"
+    ],
+    "data_info": {
+      "total_rows": 4660,
+      "date_range": "01/05/2008 ➔ 25/05/2026",
+      "start_date": "01/05/2008",
+      "end_date": "25/05/2026",
+      "targets": [
+        "MG95",
+        "MG92",
+        "DO 0.001%",
+        "DO 0.05%"
+      ]
+    },
+    "results": {
+      "GUMNet_h1": 0.021717,
+      "h1": 0.021717,
+      "HybridTriNet_h1": 0.132413,
+      "GUMNet_h5": 0.022909,
+      "h5": 0.022909,
+      "HybridTriNet_h5": 0.155804,
+      "GUMNet_h10": 0.025526,
+      "h10": 0.025526,
+      "HybridTriNet_h10": 0.164884,
+      "GUMNet_h15": 0.026641,
+      "h15": 0.026641,
+      "HybridTriNet_h15": 0.192756,
+      "GUMNet_h20": 0.026772,
+      "h20": 0.026772,
+      "HybridTriNet_h20": 0.205069,
+      "GUMNet_h30": 0.029119,
+      "h30": 0.029119,
+      "HybridTriNet_h30": 0.203144,
+      "GUMNet_h60": 0.033716,
+      "h60": 0.033716,
+      "HybridTriNet_h60": 0.288702
+    },
+    "holdout_metrics": {
+      "GUMNet_h1": {
+        "mae": 6.893443434992232,
+        "mape": 5.787597432055343,
+        "rmse": 16.72321527736927,
+        "n_windows": 699,
+        "n_forecast_values": 2796,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h1": {
+        "mae": 8.821173336372867,
+        "mape": 7.607943807625041,
+        "rmse": 19.17227755807134,
+        "n_windows": 699,
+        "n_forecast_values": 2796,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h5": {
+        "mae": 7.508205589685966,
+        "mape": 6.444316539195641,
+        "rmse": 17.62769630178329,
+        "n_windows": 695,
+        "n_forecast_values": 13900,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h5": {
+        "mae": 9.08802486995999,
+        "mape": 7.684030751654341,
+        "rmse": 20.013158776767433,
+        "n_windows": 695,
+        "n_forecast_values": 13900,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h10": {
+        "mae": 8.12896471607374,
+        "mape": 6.934175779867779,
+        "rmse": 18.976804026540265,
+        "n_windows": 690,
+        "n_forecast_values": 27600,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h10": {
+        "mae": 9.857171166737874,
+        "mape": 8.66491784846231,
+        "rmse": 20.284034661513672,
+        "n_windows": 690,
+        "n_forecast_values": 27600,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h15": {
+        "mae": 8.140078158628738,
+        "mape": 6.918354957525189,
+        "rmse": 19.42803512379052,
+        "n_windows": 685,
+        "n_forecast_values": 41100,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h15": {
+        "mae": 9.99738216372302,
+        "mape": 8.48151264160161,
+        "rmse": 21.53873132434508,
+        "n_windows": 685,
+        "n_forecast_values": 41100,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h20": {
+        "mae": 8.251942156546724,
+        "mape": 7.045858981347621,
+        "rmse": 19.82265461270668,
+        "n_windows": 680,
+        "n_forecast_values": 54400,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h20": {
+        "mae": 9.891336361380185,
+        "mape": 8.477903934905559,
+        "rmse": 21.32766294265386,
+        "n_windows": 680,
+        "n_forecast_values": 54400,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h30": {
+        "mae": 9.397447689851598,
+        "mape": 8.034946328512275,
+        "rmse": 21.606418098792297,
+        "n_windows": 670,
+        "n_forecast_values": 80400,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h30": {
+        "mae": 10.034454305753187,
+        "mape": 8.69279047636589,
+        "rmse": 21.69895777942705,
+        "n_windows": 670,
+        "n_forecast_values": 80400,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "GUMNet_h60": {
+        "mae": 9.043012112208869,
+        "mape": 7.991389813872125,
+        "rmse": 21.212525627902064,
+        "n_windows": 640,
+        "n_forecast_values": 153600,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      },
+      "HybridTriNet_h60": {
+        "mae": 12.07206914583842,
+        "mape": 11.183659450458649,
+        "rmse": 22.698775030960523,
+        "n_windows": 640,
+        "n_forecast_values": 153600,
+        "test_start_date": "2023-09-11",
+        "test_end_date": "2026-05-25"
+      }
+    },
+    "evaluation_protocol": {
+      "split": "chronological 70/15/15 by raw target timestamps",
+      "scaler_fit": "training rows only",
+      "target_overlap": "none across train, validation, and holdout",
+      "holdout_start": "2023-09-11",
+      "holdout_end": "2026-05-25"
+    },
+    "avg_val_loss": 0.109227,
+    "status": "success"
+  }
+]
