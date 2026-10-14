@@ -218,11 +218,42 @@ The application separates relational audit data from time-series files and model
 
 ## 6. Streamlit Dashboard
 
-1. **Live Forecast:** Upload data and view forecasts for horizons $H \in \{1, 5, 10, 15, 20, 30, 60\}$ days.
-2. **Backtest Metrics:** Review MAE, MAPE, and error-threshold indicators.
-3. **Upload History:** Review ingestion audit records stored in PostgreSQL.
-4. **Visualizations:** Compare forecast trends with observed prices.
-5. **Detailed Results:** Inspect and export evaluation data.
+Trực quan hóa chi tiết 5 phân hệ chức năng cốt lõi trên giao diện Dashboard điều hành:
+
+### 1. Live Forecast (Upload & Dự Báo Đa Kỳ Hạn)
+Nạp dữ liệu thị trường mới nhất và tạo dự báo tức thời cho 7 mốc thời gian $H \in \{1, 5, 10, 15, 20, 30, 60\}$ ngày kèm tùy chọn kích hoạt tự động cập nhật độ thông minh cho mô hình.
+
+<p align="center">
+  <img src="docs/images/UPLOAD.png" alt="Live Forecast Interface" width="850"/>
+</p>
+
+### 2. Backtest Metrics (Đánh Giá Sai Số & Cảnh Báo)
+Sổ học bạ đo lường độ chính xác của AI qua các chỉ số sai số chuẩn quốc tế MAE (USD) và MAPE (%), tích hợp hệ thống đèn tín hiệu thông minh Đỏ / Vàng / Xanh theo ngưỡng tin cậy.
+
+<p align="center">
+  <img src="docs/images/CHISO.png" alt="Backtest Metrics & Thresholds" width="850"/>
+</p>
+
+### 3. Visualizations (Trực Quan Hóa So Sánh Xu Hướng)
+So sánh trực quan giữa đường giá thực tế (nét liền) và đường dự báo của các mô hình (nét đứt), hỗ trợ phân tích đa góc nhìn theo từng mốc horizon và từng mặt hàng dầu khí.
+
+<p align="center">
+  <img src="docs/images/BIEUDOSOSANH.png" alt="Trend Comparison Visualizations" width="850"/>
+</p>
+
+### 4. Upload History & Lộ Trình Dự Báo Chi Tiết
+Kiểm tra chi tiết từng con số Dự báo vs Thực tế và quản lý toàn bộ vết kiểm toán (Audit Trail) các đợt nạp dữ liệu được đồng bộ trực tiếp từ PostgreSQL 16.
+
+<p align="center">
+  <img src="docs/images/DUDOANVSTHUCTE.png" alt="Forecast vs Actual History" width="850"/>
+</p>
+
+### 5. Detailed Results (Dữ Liệu Thô & Xuất Báo Cáo)
+Xem và xuất toàn bộ bảng số liệu mô phỏng, phân tích chuyên sâu cho các kỹ sư dữ liệu và chuyên gia phân tích tài chính.
+
+<p align="center">
+  <img src="docs/images/BD_DATASET.png" alt="Detailed Dataset & Results" width="850"/>
+</p>
 
 ---
 
