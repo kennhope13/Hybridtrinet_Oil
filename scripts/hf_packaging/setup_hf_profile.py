@@ -41,7 +41,7 @@ model packaging, and inference pipelines.
 ## Links
 
 - **GitHub:** [github.com/neitpm](https://github.com/neitpm)
-- **Email:** [pmtiena8tqtpy@gmail.com](mailto:pmtiena8tqtpy@gmail.com)
+- **Email:** [neit.pm.work@gmail.com](mailto:neit.pm.work@gmail.com)
 """
 
     print(f"[INFO] Creating/Verifying profile repo: {repo_id}...")
