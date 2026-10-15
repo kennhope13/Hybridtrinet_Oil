@@ -20,3 +20,9 @@ checkpoints_candidate/
 .env
 *.env
 !.env.example
+
+# Large Model Checkpoints & Local Training Weights (Distributed via Hugging Face Hub)
+*.pt
+*.pth
+benchmark/
+hf_releases/hybridtrinet-oil-forecasting/models/*/model.pt
