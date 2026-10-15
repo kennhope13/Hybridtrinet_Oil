@@ -177,7 +177,7 @@ Input Tensor: [Batch, seq_len=30, input_dim=17]
 ### 4.4 Branch 3: 2-Layer GRU + Multi-Head Self-Attention
 - Stacked 2-layer `nn.GRU(input_dim=17, hidden_size=64, dropout=0.1, batch_first=True)`.
 - Self-attention layer (`nn.MultiheadAttention(embed_dim=64, num_heads=4, batch_first=True)`) extracts cross-timestep contextual relevance.
-- Extracts terminal attention state $f_{\text{gru}} = \text{attn\_out}[:, -1, :] \in \mathbb{R}^{B \times 64}$.
+- Extracts terminal attention state: `f_gru = attn_out[:, -1, :]` $\in \mathbb{R}^{B \times 64}$.
 
 <p align="center">
   <img src="docs/figures/11_gumnet_gru_attention.png" alt="11. GUMNet GRU + Multi-Head Attention" width="950"/>
