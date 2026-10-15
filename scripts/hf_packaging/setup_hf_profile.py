@@ -13,30 +13,18 @@ def setup_profile():
     repo_id = "neitpm/neitpm"
 
     profile_content = """---
-title: Pham Minh Tien
+title: PHAM MINH TIEN
 emoji: 🧠
 colorFrom: blue
 colorTo: indigo
 pinned: false
 ---
 
-# Pham Minh Tien
+# PHAM MINH TIEN
 
-### AI Engineer · Computer Vision · Time-Series Forecasting
+### AI Engineer
 
-I build deep learning systems for computer vision, document AI, biometric ROI detection,
-and multi-horizon time-series forecasting, with an emphasis on reproducible evaluation,
-model packaging, and inference pipelines.
-
-## Featured Model Releases
-
-- **[HybridTriNet Oil Forecasting](https://huggingface.co/neitpm/hybridtrinet-oil-forecasting)**  
-  Multi-horizon forecasting bundle with GUMNet and HybridTriNet architectures,
-  per-horizon checkpoints, scalers, inference code, metrics, and SHA-256 verification.
-
-- **[SSDLite Palm-Vein ROI](https://huggingface.co/neitpm/ssdlite-palm-vein-roi)**  
-  CPU-based ONNX inference prototype for SSDLite-MobileNetV3 with PyTorch–ONNX
-  numerical parity verification and reproducible latency profiling.
+I build deep learning systems for **visual perception and time-series modeling**, with an emphasis on ONNX edge inference and reproducible evaluation.
 
 ## Links
 
