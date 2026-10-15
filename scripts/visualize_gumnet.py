@@ -329,74 +329,88 @@ def draw_13_gumnet_quantile_output():
 # 14. Model Comparison Diagram
 # =============================================================================
 def draw_14_model_comparison():
-    fig, ax = plt.subplots(figsize=(17, 10.5), dpi=300, facecolor="#ffffff")
+    fig, ax = plt.subplots(figsize=(17, 12.0), dpi=300, facecolor="#ffffff")
     ax.set_facecolor("#ffffff")
     ax.set_xlim(0, 17)
-    ax.set_ylim(0, 10.5)
+    ax.set_ylim(0, 12.0)
     ax.axis("off")
 
-    ax.text(8.5, 9.9, "14. System Model Comparison: GUMNet vs. HybridTriNet", fontsize=16, fontweight="bold", color="#0f172a", ha="center")
-    ax.text(8.5, 9.45, "Comparative Architectural Paradigm, Objective Function, Target Handling & Operational Roles", fontsize=11, color="#64748b", ha="center")
+    ax.text(8.5, 11.4, "14. System Model Comparison: GUMNet vs. HybridTriNet", fontsize=16, fontweight="bold", color="#0f172a", ha="center")
+    ax.text(8.5, 10.95, "Comparative Architectural Paradigm, Objective Function, Target Handling & Operational Roles", fontsize=11, color="#64748b", ha="center")
 
     # Column 1: GUMNet Panel
-    ax.add_patch(patches.FancyBboxPatch((0.6, 0.6), 7.6, 8.4, boxstyle="round,pad=0.2", facecolor="#fdf2f8", edgecolor="#db2777", lw=2.2))
-    ax.text(4.4, 8.6, "GUMNet (Production & Backtest Pipeline)", fontsize=13, fontweight="bold", color="#9d174d", ha="center")
-    ax.text(4.4, 8.2, "Probabilistic Multi-Horizon Quantile Forecaster", fontsize=9.5, style="italic", color="#be185d", ha="center")
+    ax.add_patch(patches.FancyBboxPatch((0.6, 0.5), 7.6, 10.0, boxstyle="round,pad=0.2", facecolor="#fdf2f8", edgecolor="#db2777", lw=2.2))
+    ax.text(4.4, 10.1, "GUMNet (Production & Backtest Pipeline)", fontsize=13, fontweight="bold", color="#9d174d", ha="center")
+    ax.text(4.4, 9.7, "Probabilistic Multi-Horizon Quantile Forecaster", fontsize=9.5, style="italic", color="#be185d", ha="center")
 
-    draw_isometric_cube(ax, 1.2, 6.4, 1.6, 1.3, 0.4, "#fbcfe8", edge_color="#db2777")
-    ax.text(2.0, 7.0, "Input\n[B, 30, 17]", fontsize=8.5, fontweight="bold", color="#9d174d", ha="center")
+    draw_isometric_cube(ax, 1.2, 7.9, 1.6, 1.3, 0.4, "#fbcfe8", edge_color="#db2777")
+    ax.text(2.0, 8.5, "Input\n[B, 30, 17]", fontsize=8.5, fontweight="bold", color="#9d174d", ha="center")
 
-    draw_isometric_cube(ax, 3.6, 6.4, 2.2, 1.3, 0.4, "#f472b6", edge_color="#be185d")
-    ax.text(4.7, 7.0, "Tri-Branch\nWavelet+CNN+GRU", fontsize=8.5, fontweight="bold", color="#831843", ha="center")
+    draw_isometric_cube(ax, 3.6, 7.9, 2.2, 1.3, 0.4, "#f472b6", edge_color="#be185d")
+    ax.text(4.7, 8.5, "Tri-Branch\nWavelet+CNN+GRU", fontsize=8.5, fontweight="bold", color="#831843", ha="center")
 
-    draw_isometric_cube(ax, 6.4, 6.4, 1.4, 1.3, 0.4, "#db2777", edge_color="#9d174d")
-    ax.text(7.1, 7.0, "Output\n[B, H, 4, 3]", fontsize=8.5, fontweight="bold", color="#ffffff", ha="center")
+    draw_isometric_cube(ax, 6.4, 7.9, 1.4, 1.3, 0.4, "#db2777", edge_color="#9d174d")
+    ax.text(7.1, 8.5, "Output\n[B, H, 4, 3]", fontsize=8.5, fontweight="bold", color="#ffffff", ha="center")
 
     gum_specs = [
-        ("Operational Role", "Primary operational pipeline model / Candidate promotion backtester"),
-        ("Forecasting Paradigm", "Probabilistic Quantile Forecast (q = 0.10, 0.50, 0.90)"),
-        ("Objective Loss", "Pinball Quantile Loss (Multi-quantile asymmetric penalty)"),
-        ("Lookback Window", "seq_len = 30 trading steps"),
-        ("Input Features", "17 market & exogenous features"),
-        ("Representation Branches", "1. Wavelet-KAN (Mexican Hat continuous basis)\n2. Dilated 1D CNN (dilation=2, k=3)\n3. 2-Layer GRU (hidden=64) + Multi-Head Attention"),
-        ("Gating Mechanism", "Softmax vector w: [B, 3] fusing feature representations"),
-        ("Output Dimension", "[Batch, Horizon, 4 targets, 3 quantiles]"),
+        ("Operational Role", ["Primary operational pipeline model /", "Candidate promotion backtester"]),
+        ("Forecasting Paradigm", ["Probabilistic Quantile Forecast", "(q = 0.10, 0.50, 0.90)"]),
+        ("Objective Loss", ["Pinball Quantile Loss", "(Multi-quantile asymmetric penalty)"]),
+        ("Lookback Window", ["seq_len = 30 trading steps"]),
+        ("Input Features", ["17 market & exogenous features"]),
+        ("Representation Branches", [
+            "1. Wavelet-KAN (Mexican Hat continuous basis)",
+            "2. Dilated 1D CNN (dilation=2, k=3)",
+            "3. 2-Layer GRU (hidden=64) + Multi-Head Attention"
+        ]),
+        ("Gating Mechanism", ["Softmax vector w: [B, 3] fusing feature representations"]),
+        ("Output Dimension", ["[Batch, Horizon, 4 targets, 3 quantiles]"]),
     ]
-    y_pos = 5.5
-    for label, val in gum_specs:
-        ax.text(1.0, y_pos, f"• {label}:", fontsize=8.8, fontweight="bold", color="#831843")
-        ax.text(1.2, y_pos - 0.28, val, fontsize=8.0, color="#1e293b")
-        y_pos -= 0.60
+    cur_y = 7.1
+    for label, lines in gum_specs:
+        ax.text(1.0, cur_y, f"• {label}:", fontsize=8.8, fontweight="bold", color="#831843")
+        cur_y -= 0.28
+        for line in lines:
+            ax.text(1.3, cur_y, line, fontsize=8.0, color="#1e293b")
+            cur_y -= 0.24
+        cur_y -= 0.14
 
     # Column 2: HybridTriNet Panel
-    ax.add_patch(patches.FancyBboxPatch((8.8, 0.6), 7.6, 8.4, boxstyle="round,pad=0.2", facecolor="#eff6ff", edgecolor="#2563eb", lw=2.2))
-    ax.text(12.6, 8.6, "HybridTriNet (Clean Hub Packaging Release)", fontsize=13, fontweight="bold", color="#1e40af", ha="center")
-    ax.text(12.6, 8.2, "Deterministic Deep Multi-Horizon Point Forecaster", fontsize=9.5, style="italic", color="#2563eb", ha="center")
+    ax.add_patch(patches.FancyBboxPatch((8.8, 0.5), 7.6, 10.0, boxstyle="round,pad=0.2", facecolor="#eff6ff", edgecolor="#2563eb", lw=2.2))
+    ax.text(12.6, 10.1, "HybridTriNet (Clean Hub Packaging Release)", fontsize=13, fontweight="bold", color="#1e40af", ha="center")
+    ax.text(12.6, 9.7, "Deterministic Deep Multi-Horizon Point Forecaster", fontsize=9.5, style="italic", color="#2563eb", ha="center")
 
-    draw_isometric_cube(ax, 9.4, 6.4, 1.6, 1.3, 0.4, "#bfdbfe", edge_color="#2563eb")
-    ax.text(10.2, 7.0, "Input\n[B, 64, 15]", fontsize=8.5, fontweight="bold", color="#1e40af", ha="center")
+    draw_isometric_cube(ax, 9.4, 7.9, 1.6, 1.3, 0.4, "#bfdbfe", edge_color="#2563eb")
+    ax.text(10.2, 8.5, "Input\n[B, 64, 15]", fontsize=8.5, fontweight="bold", color="#1e40af", ha="center")
 
-    draw_isometric_cube(ax, 11.8, 6.4, 2.2, 1.3, 0.4, "#60a5fa", edge_color="#1d4ed8")
-    ax.text(12.9, 7.0, "Tri-Branch\nKAN+GRU+PatchAttn", fontsize=8.5, fontweight="bold", color="#172554", ha="center")
+    draw_isometric_cube(ax, 11.8, 7.9, 2.2, 1.3, 0.4, "#60a5fa", edge_color="#1d4ed8")
+    ax.text(12.9, 8.5, "Tri-Branch\nKAN+GRU+PatchAttn", fontsize=8.5, fontweight="bold", color="#172554", ha="center")
 
-    draw_isometric_cube(ax, 14.6, 6.4, 1.4, 1.3, 0.4, "#2563eb", edge_color="#1e3a8a")
-    ax.text(15.3, 7.0, "Output\n[B, H, 4]", fontsize=8.5, fontweight="bold", color="#ffffff", ha="center")
+    draw_isometric_cube(ax, 14.6, 7.9, 1.4, 1.3, 0.4, "#2563eb", edge_color="#1e3a8a")
+    ax.text(15.3, 8.5, "Output\n[B, H, 4]", fontsize=8.5, fontweight="bold", color="#ffffff", ha="center")
 
     hyb_specs = [
-        ("Operational Role", "Stand-alone clean 15-feature release packaged for Hugging Face Hub"),
-        ("Forecasting Paradigm", "Deterministic Point Forecast with horizon-specific scalers"),
-        ("Objective Loss", "Smooth L1 Loss (Huber Loss variant for outlier robustness)"),
-        ("Lookback Window", "K = 64 trading steps (Extended history)"),
-        ("Input Features", "15 clean market features (synthetic temporal index purged)"),
-        ("Representation Branches", "1. KAN (Learnable RBF M=8, 2x KANBlocks)\n2. Sequential GRU (hidden=128, terminal state)\n3. Patch Transformer (7 patches, 4 heads, 2 layers)"),
-        ("Gating Mechanism", "Time-step-varying softmax tensor w: [B, H, 3] (sum to 1)"),
-        ("Output Dimension", "[Batch, Horizon, 4 targets] (Physical commodity scale)"),
+        ("Operational Role", ["Stand-alone clean 15-feature release", "packaged for Hugging Face Hub"]),
+        ("Forecasting Paradigm", ["Deterministic Point Forecast with", "horizon-specific scalers"]),
+        ("Objective Loss", ["Smooth L1 Loss", "(Huber Loss variant for outlier robustness)"]),
+        ("Lookback Window", ["K = 64 trading steps (Extended history)"]),
+        ("Input Features", ["15 clean market features", "(synthetic temporal index purged)"]),
+        ("Representation Branches", [
+            "1. KAN (Learnable RBF M=8, 2x KANBlocks)",
+            "2. Sequential GRU (hidden=128, terminal state)",
+            "3. Patch Transformer (7 patches, 4 heads, 2 layers)"
+        ]),
+        ("Gating Mechanism", ["Time-step-varying softmax tensor", "w: [B, H, 3] (sum to 1)"]),
+        ("Output Dimension", ["[Batch, Horizon, 4 targets]", "(Physical commodity scale)"]),
     ]
-    y_pos = 5.5
-    for label, val in hyb_specs:
-        ax.text(9.2, y_pos, f"• {label}:", fontsize=8.8, fontweight="bold", color="#1e3a8a")
-        ax.text(9.4, y_pos - 0.28, val, fontsize=8.0, color="#1e293b")
-        y_pos -= 0.60
+    cur_y = 7.1
+    for label, lines in hyb_specs:
+        ax.text(9.2, cur_y, f"• {label}:", fontsize=8.8, fontweight="bold", color="#1e3a8a")
+        cur_y -= 0.28
+        for line in lines:
+            ax.text(9.5, cur_y, line, fontsize=8.0, color="#1e293b")
+            cur_y -= 0.24
+        cur_y -= 0.14
 
     save_fig(fig, FIG_DIR / "14_model_comparison.png")
 

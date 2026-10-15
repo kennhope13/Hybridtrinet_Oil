@@ -336,35 +336,41 @@ def draw_6_gated_fusion():
 # 7. Multi-Horizon Output Shapes
 # =============================================================================
 def draw_7_multi_horizon_output():
-    fig, ax = plt.subplots(figsize=(16, 7.5), dpi=300, facecolor="#ffffff")
+    fig, ax = plt.subplots(figsize=(16, 8.5), dpi=300, facecolor="#ffffff")
     ax.set_facecolor("#ffffff")
     ax.set_xlim(0, 16)
-    ax.set_ylim(0, 7.5)
+    ax.set_ylim(0, 8.5)
     ax.axis("off")
 
-    ax.text(8.0, 7.0, "7. Multi-Horizon Forecasting Output Tensor Decomposition", fontsize=16, fontweight="bold", color="#0f172a", ha="center")
-    ax.text(8.0, 6.6, "Isolated, horizon-specialized checkpoints evaluated simultaneously for 4 target commodities", fontsize=10, color="#64748b", ha="center")
+    ax.text(8.0, 8.0, "7. Multi-Horizon Forecasting Output Tensor Decomposition", fontsize=16, fontweight="bold", color="#0f172a", ha="center")
+    ax.text(8.0, 7.55, "Isolated, horizon-specialized checkpoints evaluated simultaneously for 4 target commodities", fontsize=10.5, color="#64748b", ha="center")
 
     hz_cards = [
-        {"h": 1, "h_val": 1.2, "w_val": 1.4, "color": "#94a3b8", "edge": "#475569", "name": "Horizon 1d", "shape": "[B, 1, 4]", "cycle": "Spot / 1-Day Ahead\nFast Momentum"},
-        {"h": 5, "h_val": 1.6, "w_val": 1.4, "color": "#60a5fa", "edge": "#2563eb", "name": "Horizon 5d", "shape": "[B, 5, 4]", "cycle": "1-Week Outlook\nInventory Cycle"},
-        {"h": 10, "h_val": 2.0, "w_val": 1.4, "color": "#818cf8", "edge": "#4f46e5", "name": "Horizon 10d", "shape": "[B, 10, 4]", "cycle": "2-Week Forward\nRefinery Dispatch"},
-        {"h": 15, "h_val": 2.3, "w_val": 1.4, "color": "#c084fc", "edge": "#7e22ce", "name": "Horizon 15d", "shape": "[B, 15, 4]", "cycle": "Mid-Month Tender\nArbitrage Spread"},
-        {"h": 20, "h_val": 2.6, "w_val": 1.4, "color": "#f472b6", "edge": "#db2777", "name": "Horizon 20d", "shape": "[B, 20, 4]", "cycle": "Monthly Turnaround\nProcurement Cycle"},
-        {"h": 30, "h_val": 2.9, "w_val": 1.4, "color": "#fbbf24", "edge": "#d97706", "name": "Horizon 30d", "shape": "[B, 30, 4]", "cycle": "1-Month Contract\nMacro Shifts"},
-        {"h": 60, "h_val": 3.4, "w_val": 1.4, "color": "#fb923c", "edge": "#ea580c", "name": "Horizon 60d", "shape": "[B, 60, 4]", "cycle": "Quarterly Strategy\nStructural Cycle"},
+        {"h": 1, "h_val": 1.2, "w_val": 1.4, "color": "#94a3b8", "edge": "#475569", "name": "Horizon 1d", "shape": "[B, 1, 4]", "cycle": ["Spot / 1-Day Ahead", "Fast Momentum"]},
+        {"h": 5, "h_val": 1.6, "w_val": 1.4, "color": "#60a5fa", "edge": "#2563eb", "name": "Horizon 5d", "shape": "[B, 5, 4]", "cycle": ["1-Week Outlook", "Inventory Cycle"]},
+        {"h": 10, "h_val": 2.0, "w_val": 1.4, "color": "#818cf8", "edge": "#4f46e5", "name": "Horizon 10d", "shape": "[B, 10, 4]", "cycle": ["2-Week Forward", "Refinery Dispatch"]},
+        {"h": 15, "h_val": 2.3, "w_val": 1.4, "color": "#c084fc", "edge": "#7e22ce", "name": "Horizon 15d", "shape": "[B, 15, 4]", "cycle": ["Mid-Month Tender", "Arbitrage Spread"]},
+        {"h": 20, "h_val": 2.6, "w_val": 1.4, "color": "#f472b6", "edge": "#db2777", "name": "Horizon 20d", "shape": "[B, 20, 4]", "cycle": ["Monthly Turnaround", "Procurement Cycle"]},
+        {"h": 30, "h_val": 2.9, "w_val": 1.4, "color": "#fbbf24", "edge": "#d97706", "name": "Horizon 30d", "shape": "[B, 30, 4]", "cycle": ["1-Month Contract", "Macro Shifts"]},
+        {"h": 60, "h_val": 3.4, "w_val": 1.4, "color": "#fb923c", "edge": "#ea580c", "name": "Horizon 60d", "shape": "[B, 60, 4]", "cycle": ["Quarterly Strategy", "Structural Cycle"]},
     ]
 
     for idx, c in enumerate(hz_cards):
         x = 0.6 + idx * 2.15
-        y = 2.0
+        y = 2.8
         draw_isometric_cube(ax, x, y, c["w_val"], c["h_val"], 0.6, c["color"], edge_color=c["edge"])
         ax.text(x + c["w_val"] / 2, y + c["h_val"] + 0.65, c["name"], fontsize=10.5, fontweight="bold", color="#0f172a", ha="center")
-        ax.text(x + c["w_val"] / 2, y + c["h_val"] + 0.35, c["shape"], fontsize=9, fontweight="bold", color=c["edge"], ha="center")
-        ax.text(x + c["w_val"] / 2, y - 0.7, f"{c['cycle']}\nMG95, MG92\nDO 0.001%, DO 0.05%", fontsize=7.5, color="#334155", ha="center", va="top")
+        ax.text(x + c["w_val"] / 2, y + c["h_val"] + 0.32, c["shape"], fontsize=9, fontweight="bold", color=c["edge"], ha="center")
+        
+        # Text descriptions below cube
+        y_text = y - 0.25
+        for line in c["cycle"]:
+            ax.text(x + c["w_val"] / 2, y_text, line, fontsize=7.8, fontweight="medium", color="#1e293b", ha="center", va="top")
+            y_text -= 0.26
+        ax.text(x + c["w_val"] / 2, y_text - 0.05, "MG95, MG92\nDO 0.001%, DO 0.05%", fontsize=7.2, color="#475569", ha="center", va="top")
 
-    ax.add_patch(patches.Rectangle((0.6, 0.4), 14.8, 0.7, facecolor="#f8fafc", edgecolor="#cbd5e1", lw=1.2, linestyle="--"))
-    ax.text(8.0, 0.75, "Denormalization Guarantee: Out = out_norm * y_sd + y_mu restoring forecasts to physical USD/barrel & market scale.", fontsize=8.8, color="#475569", ha="center")
+    ax.add_patch(patches.Rectangle((0.6, 0.25), 14.8, 0.65, facecolor="#f8fafc", edgecolor="#94a3b8", lw=1.2, linestyle="--"))
+    ax.text(8.0, 0.58, "Denormalization Guarantee: Out = out_norm * y_sd + y_mu restoring forecasts to physical USD/barrel & market scale.", fontsize=9.0, color="#334155", ha="center", va="center")
 
     save_fig(fig, FIG_DIR / "7_multi_horizon_output.png")
 
