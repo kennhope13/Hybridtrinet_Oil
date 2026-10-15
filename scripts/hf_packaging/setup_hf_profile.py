@@ -29,6 +29,7 @@ I build deep learning systems for **visual perception and time-series modeling**
 ## Links
 
 - **GitHub:** [github.com/neitpm](https://github.com/neitpm)
+- **LinkedIn:** [neit-pm](https://www.linkedin.com/in/neit-pm-114a0537a/)
 - **Email:** [neit.pm.work@gmail.com](mailto:neit.pm.work@gmail.com)
 """
 
